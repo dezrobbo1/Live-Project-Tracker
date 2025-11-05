@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Live Project Tracker</title>
   <link rel="stylesheet" href="/styles.css?v=20251105f"/>
 </head>
@@ -26,12 +26,12 @@
     <div class="hscroll">
       <table id="taskTable" aria-label="3-day forecast">
         <colgroup>
-          <col class="taskname">
-          <col class="summary">
-          <col class="start">
-          <col class="actual">
-          <col class="dept">
-          <col class="actions">
+          <col class="taskname" />
+          <col class="summary" />
+          <col class="start" />
+          <col class="actual" />
+          <col class="dept" />
+          <col class="actions" />
         </colgroup>
         <thead>
           <tr>
@@ -48,9 +48,8 @@
     </div>
   </main>
 
-  <!-- Pause dialog -->
-  <dialog id="pauseDialog" role="dialog" aria-modal="true" aria-labelledby="pauseTitle">
-    <form method="dialog">
+  <dialog id="pauseDialog" aria-modal="true" aria-labelledby="pauseTitle">
+    <form id="pauseForm">
       <h3 id="pauseTitle">Pause Task</h3>
       <p class="muted"><b id="pauseTaskName"></b></p>
       <label>Reason
@@ -69,8 +68,8 @@
         <textarea id="pauseNotes" rows="3" placeholder="Optional"></textarea>
       </label>
       <menu>
-        <button value="cancel">Cancel</button>
-        <button id="confirmPause" value="default">Pause</button>
+        <button type="button" id="cancelPause">Cancel</button>
+        <button type="submit" id="confirmPause">Pause</button>
       </menu>
     </form>
   </dialog>

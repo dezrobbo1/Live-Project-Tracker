@@ -1,8 +1,8 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-  <meta charset="utf-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1"/>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Delay Log</title>
   <link rel="stylesheet" href="/styles.css?v=20251105h"/>
 </head>
@@ -10,14 +10,16 @@
   <header class="bar">
     <h1>Delay Log</h1>
     <div class="tools">
-      <button onclick="location.href='/'">← Back to Tracker</button>
-      <button id="clearLog">Clear Log</button>
+      <button type="button" id="backBtn">← Back</button>
+      <button type="button" id="exportDelayBtn">Export CSV</button>
+      <button type="button" id="clearDelayBtn">Clear Log</button>
     </div>
   </header>
 
   <main>
+    <div id="delayNotice" class="notice">Recorded pauses appear below.</div>
     <div class="hscroll">
-      <table aria-label="Delay log table">
+      <table id="delayTable" aria-label="Delay log">
         <thead>
           <tr>
             <th>Logged At</th>
@@ -30,7 +32,7 @@
             <th>Notes</th>
           </tr>
         </thead>
-        <tbody id="logBody"></tbody>
+        <tbody></tbody>
       </table>
     </div>
   </main>

@@ -317,45 +317,96 @@ window.addEventListener("DOMContentLoaded", () => {
       });
     });
 
-    // Text30-only department
-    function departmentFromXML(taskEl){
-      let result = "";
-      ql(taskEl,"ExtendedAttribute").forEach(a=>{
-        const id = firstText(a,"FieldID");
-        const val= firstText(a,"Value");
-        if (!result && id === "188743734" && val) result = val; // Text30 heuristic
-        const alias = id ? (defMap.get(id)||"") : "";
-        if (!result && alias && /^assigned department$/i.test(alias) && val) result = val;
-      });
-      return result;
-    }
-
-    // Build map of WBS -> Task (includes summaries); then emit only non-summaries
-    const allTasks = [];
-    ql(doc,"Tasks").forEach(tasksNode=>{
-      ql(tasksNode,"Task").forEach(taskEl=>{
-        allTasks.push({
-          uid:firstText(taskEl,"UID"),
-          name:firstText(taskEl,"Name"),
-          wbs:firstText(taskEl,"WBS"),
-          olvl:parseInt(firstText(taskEl,"OutlineLevel")||"1",10)||1,
-          isSummary:(firstText(taskEl,"Summary")||"0")==="1",
-          start:firstText(taskEl,"Start"),
-          finish:firstText(taskEl,"Finish"),
-          pct:parseInt(firstText(taskEl,"PercentComplete")||"0",10)||0,
-          el:taskEl
-        });
-      });
+    exportBtn.addEventListener("click", () => {
+      const csv = buildExportCSV(tasks);
+      const blob = new Blob([csv], { type: "text/csv" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `shift_report_${formatDateForFile(new Date())}.csv`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1500);
     });
 
-    const byWBS = new Map(allTasks.map(t=>[t.wbs,t]));
-    const out=[];
-    for(const t of allTasks){
-      if (t.isSummary) continue; // hide summary tasks
-      let parentSummaryName = "";
-      if (t.wbs && t.wbs.includes(".")){
-        const parentWBS = t.wbs.split(".").slice(0,-1).join(".");
-        parentSummaryName = byWBS.get(parentWBS)?.name || "";
+    fileInput.addEventListener("change", async (event) => {
+      const file = event.target.files && event.target.files[0];
+      if (!file) return;
+      try {
+        const text = await readFileSmart(file);
+        const imported = await parseProjectFile(text, file.name || "");
+        tasks = imported.map(normalizeTask);
+        saveTasks();
+        updateNotice();
+        render();
+      } catch (err) {
+        console.error("[Tracker] Import failed", err);
+        alert(err && err.message ? err.message : "Unable to import file");
+      } finally {
+        event.target.value = "";
+      }
+    });
+
+    if (dialogSupported && pauseForm && pauseReason && pauseNotes && cancelPause){
+      pauseForm.addEventListener("submit", (ev) => {
+        ev.preventDefault();
+        if (!pauseTargetUID) {
+          pauseDialog.close();
+          return;
+        }
+        const reason = (pauseReason.value || "").trim();
+        const notes = (pauseNotes.value || "").trim();
+        if (!reason) {
+          pauseReason.focus();
+          return;
+        }
+        applyPause(pauseTargetUID, reason, notes);
+        pauseDialog.close();
+      });
+
+      cancelPause.addEventListener("click", () => {
+        pauseDialog.close();
+      });
+
+      pauseDialog.addEventListener("close", () => {
+        pauseTargetUID = null;
+        pauseReason.value = "";
+        pauseNotes.value = "";
+      });
+    }
+
+    function loadTasks(){
+      const current = readStorage(TASK_STORAGE_KEY) || [];
+      if (Array.isArray(current) && current.length) return current.map(normalizeTask);
+      for (const key of LEGACY_TASK_KEYS){
+        const legacy = readStorage(key);
+        if (Array.isArray(legacy) && legacy.length) return legacy.map(normalizeTask);
+      }
+      return [];
+    }
+
+    function saveTasks(){
+      try {
+        localStorage.setItem(TASK_STORAGE_KEY, JSON.stringify(tasks));
+      } catch (err) {
+        console.warn("[Tracker] Unable to save tasks", err);
+      }
+    }
+
+    function loadDelayLog(){
+      const current = readStorage(DELAY_LOG_KEY) || [];
+      if (Array.isArray(current) && current.length) return sanitizeDelayEntries(current);
+      for (const key of LEGACY_DELAY_KEYS){
+        const legacy = readStorage(key);
+        if (Array.isArray(legacy) && legacy.length) return sanitizeDelayEntries(legacy);
+      }
+      return [];
+    }
+
+    function saveDelayLog(entries){
+      try {
+        localStorage.setItem(DELAY_LOG_KEY, JSON.stringify(sanitizeDelayEntries(entries)));
+      } catch (err) {
+        console.warn("[Tracker] Unable to save delay log", err);
       }
       const plannedStartISO = t.start ? new Date(t.start).toISOString() : "";
       const plannedFinishISO = t.finish ? new Date(t.finish).toISOString() : "";
@@ -421,9 +472,6 @@ window.addEventListener("DOMContentLoaded", () => {
       console.error(err);
       return;
     }
-    e.target.value="";
-    render();
-  });
 
   function parseCSVToTasks(text){
     const parsed = parseCSV(text);
@@ -491,6 +539,38 @@ window.addEventListener("DOMContentLoaded", () => {
         lastStart:null, lastPause:null,
         Audit:[]
       });
+      saveTasks();
+      render();
+    }
+
+    function handleFinish(uid){
+      const task = tasks.find(t => t.TaskUID === uid);
+      if (!task || task.State === "Finished") return;
+      const nowIso = new Date().toISOString();
+      if (task.State === "Running" && task.lastStart){
+        task.TotalActiveMinutes += minutesBetween(task.lastStart, nowIso);
+      }
+      if (task.State === "Paused" && task.lastPause){
+        task.TotalPausedMinutes += minutesBetween(task.lastPause, nowIso);
+      }
+      task.State = "Finished";
+      task.ActualFinish = nowIso;
+      task.lastStart = null;
+      task.lastPause = null;
+      task.Audit.push({ type:"finish", at: nowIso });
+      saveTasks();
+      render();
+    }
+
+    function parseProjectFile(text, name){
+      const trimmed = (text || "").trim();
+      if (!trimmed) throw new Error("File is empty");
+      const lowerName = (name || "").toLowerCase();
+      const looksXml = lowerName.endsWith(".xml") || trimmed.startsWith("<?xml") || trimmed.startsWith("<Project");
+      if (looksXml){
+        return parseMSPXml(trimmed);
+      }
+      return parseCSVToTasks(trimmed);
     }
     return out;
   }
@@ -499,44 +579,225 @@ window.addEventListener("DOMContentLoaded", () => {
   delayBtn?.addEventListener("click", () => { window.location.href = "/delay.html"; });
   clearBtn?.addEventListener("click", () => { window.clearProject(); });
 
-  // ========= Actions / FSM =========
-  function startTask(uid){
-    try{
-      const t = tasks.find(x=>x.TaskUID===uid); if(!t) return;
-      const now = new Date().toISOString();
-      if(t.State==="Idle"){
-        t.ActualStart=now; t.State="Active"; t.lastStart=now; (t.Audit ||= []).push({type:"Start",time:now});
-      }else if(t.State==="Paused"){
-        t.State="Active";
-        if(t.lastPause){
-          const paused = new Date(now) - new Date(t.lastPause);
-          t.TotalPausedMinutes = (t.TotalPausedMinutes||0) + (paused>0 ? Math.round(paused/60000) : 0);
+    function parseMSPXml(xmlText){
+      const parser = new DOMParser();
+      const doc = parser.parseFromString(xmlText, "application/xml");
+      const parseError = doc.querySelector("parsererror");
+      if (parseError){
+        throw new Error("Unable to parse XML file");
+      }
+      const tasks = [];
+      const rows = Array.from(doc.getElementsByTagName("Task"));
+      const byWBS = new Map();
+      rows.forEach(node => {
+        const uid = textContent(node, "UID");
+        const name = textContent(node, "Name");
+        const summary = textContent(node, "Summary");
+        const wbs = textContent(node, "WBS");
+        const outlineLevel = parseInt(textContent(node, "OutlineLevel"), 10) || 0;
+        const start = textContent(node, "Start");
+        const finish = textContent(node, "Finish");
+        const pct = parseInt(textContent(node, "PercentComplete"), 10) || 0;
+        const dept = textContent(node, "Text30");
+
+        const record = {
+          uid,
+          name,
+          summary: /^1|true$/i.test(summary || ""),
+          wbs,
+          outlineLevel,
+          startRaw: start,
+          finishRaw: finish,
+          pct,
+          dept,
+          directParent: textContent(node, "SummaryName") || ""
+        };
+        if (wbs) byWBS.set(wbs, record);
+        tasks.push(record);
+      });
+      const parentSet = computeParentSet(tasks);
+      return tasks.filter(r => !r.summary && !parentSet.has(r.wbs)).map(r => toTaskObject(r, byWBS));
+    }
+
+    function parseCSVToTasks(text){
+      const parsed = parseCSV(text);
+      if (!parsed.headers.length) throw new Error("CSV headers missing");
+      const columnMap = buildColumnMap(parsed.headers);
+      const rawRows = parsed.rows.map(cells => {
+        const summaryRaw = columnMap.summary !== -1 ? (cells[columnMap.summary] || "").trim() : "";
+        return {
+          uid: (cells[columnMap.uid] || "").trim(),
+          name: (cells[columnMap.name] || "").trim(),
+          summary: columnMap.summary === -1 ? false : /^(y|yes|true|1)$/i.test(summaryRaw),
+          wbs: (columnMap.wbs !== -1 ? (cells[columnMap.wbs] || "").trim() : ""),
+          outlineLevel: parseInt((columnMap.outlineLevel !== -1 ? cells[columnMap.outlineLevel] : ""), 10) || 0,
+          startRaw: columnMap.start !== -1 ? (cells[columnMap.start] || "").trim() : "",
+          finishRaw: columnMap.finish !== -1 ? (cells[columnMap.finish] || "").trim() : "",
+          pct: parseInt((columnMap.pct !== -1 ? cells[columnMap.pct] : ""), 10) || 0,
+          dept: columnMap.text30 !== -1 ? (cells[columnMap.text30] || "").trim() : "",
+          directParent: columnMap.taskSummaryName !== -1 ? (cells[columnMap.taskSummaryName] || "").trim() : ""
+        };
+      }).filter(r => r.uid || r.name);
+
+      const byWBS = new Map(rawRows.filter(r => r.wbs).map(r => [r.wbs, r]));
+      const parentSet = computeParentSet(rawRows);
+      return rawRows.filter(r => !r.summary && !parentSet.has(r.wbs)).map(r => toTaskObject(r, byWBS));
+    }
+
+    function toTaskObject(row, byWBS){
+      const parentName = row.directParent || deriveParentName(row.wbs, byWBS);
+      const start = parseDateField(row.startRaw);
+      const finish = parseDateField(row.finishRaw);
+      return {
+        TaskUID: row.uid || makeUID(),
+        TaskName: row.name || "Unnamed Task",
+        SummaryTaskName: parentName,
+        Department: row.dept || "",
+        PlannedStart: start.iso,
+        PlannedStartRaw: start.raw,
+        PlannedFinish: finish.iso,
+        PlannedFinishRaw: finish.raw,
+        ActualStart: null,
+        ActualFinish: null,
+        State: "Idle",
+        TotalActiveMinutes: 0,
+        TotalPausedMinutes: 0,
+        lastStart: null,
+        lastPause: null,
+        Audit: [],
+        PercentComplete: row.pct || 0
+      };
+    }
+
+    function computeParentSet(rows){
+      const set = new Set();
+      rows.forEach(r => {
+        const wbs = r.wbs || "";
+        if (!wbs.includes(".")) return;
+        const parts = wbs.split(".");
+        while (parts.length > 1){
+          parts.pop();
+          set.add(parts.join("."));
         }
-        t.lastStart=now; (t.Audit ||= []).push({type:"Resume",time:now});
+      });
+      return set;
+    }
+
+    function deriveParentName(wbs, byWBS){
+      if (!wbs || !wbs.includes(".")) return "";
+      const parts = wbs.split(".");
+      parts.pop();
+      while (parts.length){
+        const key = parts.join(".");
+        if (byWBS.has(key)){
+          const candidate = byWBS.get(key);
+          if (candidate && candidate.name) return candidate.name;
+        }
+        parts.pop();
       }
-      save(); render();
-    }catch(e){ console.error("startTask error", e); }
-  }
-  function pauseTask(uid){
-    try{
-      const t = tasks.find(x=>x.TaskUID===uid); if(!t || t.State!=="Active") return;
-      pauseUID = uid;
-      pauseTaskName.textContent = t.TaskName;
-      pauseReason.value = ""; pauseNotes.value = "";
-      pauseDialog.showModal();
-    }catch(e){ console.error("pauseTask error", e); }
-  }
-  function finishTask(uid){
-    try{
-      const t = tasks.find(x=>x.TaskUID===uid); if(!t) return;
-      const now = new Date().toISOString();
-      if(t.State==="Active" && t.lastStart){
-        const active = new Date(now) - new Date(t.lastStart);
-        t.TotalActiveMinutes = (t.TotalActiveMinutes||0) + (active>0 ? Math.round(active/60000) : 0);
+      return "";
+    }
+
+    function normalizeTask(task){
+      const safe = task && typeof task === "object" ? { ...task } : {};
+      const fixISO = value => {
+        if (!value) return null;
+        const date = new Date(value);
+        return isNaN(date) ? null : date.toISOString();
+      };
+      return {
+        TaskUID: String(safe.TaskUID || safe.uid || makeUID()),
+        TaskName: String(safe.TaskName || safe.name || "Unnamed Task"),
+        SummaryTaskName: String(safe.SummaryTaskName || safe.summaryTaskName || ""),
+        Department: String(safe.Department || safe.department || ""),
+        PlannedStart: fixISO(safe.PlannedStart || safe.PlannedStartRaw),
+        PlannedStartRaw: String(safe.PlannedStartRaw || safe.PlannedStart || ""),
+        PlannedFinish: fixISO(safe.PlannedFinish || safe.PlannedFinishRaw),
+        PlannedFinishRaw: String(safe.PlannedFinishRaw || safe.PlannedFinish || ""),
+        ActualStart: fixISO(safe.ActualStart || safe.actualStart),
+        ActualFinish: fixISO(safe.ActualFinish || safe.actualFinish),
+        State: safe.State === "Running" || safe.State === "Paused" || safe.State === "Finished" ? safe.State : "Idle",
+        TotalActiveMinutes: Number.isFinite(safe.TotalActiveMinutes) ? safe.TotalActiveMinutes : 0,
+        TotalPausedMinutes: Number.isFinite(safe.TotalPausedMinutes) ? safe.TotalPausedMinutes : 0,
+        lastStart: fixISO(safe.lastStart),
+        lastPause: fixISO(safe.lastPause),
+        Audit: Array.isArray(safe.Audit) ? safe.Audit : [],
+        PercentComplete: Number.isFinite(safe.PercentComplete) ? safe.PercentComplete : 0
+      };
+    }
+
+    function parseCSV(text){
+      const delimiter = detectDelimiter(text);
+      const rows = [];
+      let current = [];
+      let field = "";
+      let inQuotes = false;
+      for (let i = 0; i < text.length; i++){
+        const char = text[i];
+        if (char === '"'){
+          if (inQuotes && text[i+1] === '"'){
+            field += '"';
+            i++;
+          } else {
+            inQuotes = !inQuotes;
+          }
+          continue;
+        }
+        if (!inQuotes && char === delimiter){
+          current.push(field);
+          field = "";
+          continue;
+        }
+        if (!inQuotes && (char === '\n' || char === '\r')){
+          current.push(field);
+          field = "";
+          if (current.length){
+            rows.push(current);
+            current = [];
+          }
+          if (char === '\r' && text[i+1] === '\n'){
+            i++;
+          }
+          continue;
+        }
+        field += char;
       }
-      if(t.State==="Paused" && t.lastPause){
-        const paused = new Date(now) - new Date(t.lastPause);
-        t.TotalPausedMinutes = (t.TotalPausedMinutes||0) + (paused>0 ? Math.round(paused/60000) : 0);
+      current.push(field);
+      rows.push(current);
+
+      const headers = rows.shift() || [];
+      return {
+        headers,
+        rows: rows.filter(r => r.some(cell => cell && cell.trim()))
+      };
+    }
+
+    function detectDelimiter(text){
+      const sample = (text.match(/^[^\r\n]*/)||[""])[0];
+      const candidates = [",",";",String.fromCharCode(9),"|"];
+      let best = ',';
+      let bestCount = -1;
+      for (const candidate of candidates){
+        let count = 0;
+        let inQuotes = false;
+        for (let i = 0; i < sample.length; i++){
+          const char = sample[i];
+          if (char === '"'){
+            if (inQuotes && sample[i+1] === '"'){
+              i++;
+            } else {
+              inQuotes = !inQuotes;
+            }
+            continue;
+          }
+          if (!inQuotes && char === candidate){
+            count++;
+          }
+        }
+        if (count > bestCount){
+          best = candidate;
+          bestCount = count;
+        }
       }
       t.State="Finished"; t.ActualFinish=now; t.lastStart=null; t.lastPause=null;
       (t.Audit ||= []).push({type:"Finish",time:now});
@@ -572,8 +833,8 @@ window.addEventListener("DOMContentLoaded", () => {
         const active = new Date(now) - new Date(t.lastStart);
         t.TotalActiveMinutes = (t.TotalActiveMinutes||0) + (active>0 ? Math.round(active/60000) : 0);
       }
-      t.State="Paused"; t.lastStart=null; t.lastPause=now;
-      (t.Audit ||= []).push({type:"Pause",time:now,reason:pauseReason.value,notes:pauseNotes.value||""});
+      return col;
+    }
 
       appendDelayLog({
         LoggedAt: now,
@@ -586,14 +847,13 @@ window.addEventListener("DOMContentLoaded", () => {
         Reason: pauseReason.value,
         Notes: pauseNotes.value || ""
       });
-
-      save();
-      pauseDialog.close();
-      render();
-    }catch(err){
-      console.error("confirmPause error", err);
+      return lines.join("\n");
     }
-  });
+
+    function quote(value){
+      const str = value == null ? "" : String(value);
+      return /[",\n]/.test(str) ? `"${str.replace(/"/g,'""')}"` : str;
+    }
 
   // ========= Render (3-day window) =========
   function windowRange3d(){
