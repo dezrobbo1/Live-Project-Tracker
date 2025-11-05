@@ -177,12 +177,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
     "% complete": ["% complete","percent complete","percentcomplete","percent","pct complete","percent complete."],
     "resource names": ["resource names","resources","resource name","resourcename"],
-
-    // Dept can be Text30 or an explicit column name
-    "text30": ["text30","assigned department","department","dept","text 30","text-30","text_30"],
-
-    // Optional direct parent summary name column
-    "task summary name": ["task summary name","summary task name","parent summary","parent task"]
+    "text30": ["text30","assigned department","department","dept","text 30","text-30","text_30","text30 text","text30 department","text30 assigned department"]
   };
   function detectDelimiter(text){
     const sample = (text.match(/^[^\r\n]*/)||[""])[0];
@@ -251,13 +246,8 @@ window.addEventListener("DOMContentLoaded", () => {
       if (canonical==="outline level" && (h==="outline lvl"||h==="outline")) return i;
     }
     if (canonical === "text30"){
-      for (let i = 0; i < normalized.length; i++){
-        const h = normalized[i];
-        const compact = h.replace(/\s+/g, "");
-        if (compact.includes("text30")) return i;
-        if (/text\s*30/.test(h)) return i;
-        if (/(assigned\s*)?(dept|department)/.test(h) && !/(baseline|remaining|cost|resource)/.test(h)) return i;
-      }
+      const idx = normalized.findIndex(h => h.includes("text30"));
+      if (idx !== -1) return idx;
     }
     return -1;
   }
@@ -439,9 +429,27 @@ window.addEventListener("DOMContentLoaded", () => {
     const parsed = parseCSV(text);
     const col = buildColumnMap(parsed.headers);
 
-    const rows = parsed.rows.map(cells => {
-      const rawSummary = col.summary !== -1 ? (cells[col.summary]||"").trim() : "";
-      const isSummary = col.summary === -1 ? false : /^(y|yes|true|1)$/i.test(rawSummary);
+    // First pass: map rows (keep summaries for WBS lookup)
+    const rows = parsed.rows.map(cells => ({
+      uid:(cells[col.uid]||"").trim(),
+      name:(cells[col.name]||"").trim(),
+      isSummary:/^(y|yes|true|1)$/i.test((cells[col.summary]||"").trim()),
+      level:parseInt((cells[col.outlineLevel]||"1"),10)||1,
+      wbs:(cells[col.wbs]||"").trim(),
+      start:(cells[col.start]||"").trim(),
+      finish:(cells[col.finish]||"").trim(),
+      pct:parseInt((cells[col.pct]||"0"),10)||0,
+      dept:(col.text30!==-1 ? (cells[col.text30]||"").trim() : "")
+    }));
+    const byWBS = new Map(rows.map(r=>[r.wbs,r]));
+    const summaryWBS = new Set();
+    rows.forEach(r => {
+      if (!r.wbs) return;
+      const parts = r.wbs.split(".");
+      for (let i = parts.length - 1; i > 0; i--){
+        summaryWBS.add(parts.slice(0, i).join("."));
+      }
+    });
 
       return {
         uid:(cells[col.uid]||"").trim(),
@@ -459,21 +467,21 @@ window.addEventListener("DOMContentLoaded", () => {
     const byWBS = new Map(rows.map(r=>[r.wbs,r]));
     const out=[];
     for(const r of rows){
-      if (r.isSummary) continue;
-
-      let parentSummaryName = r.directParent || "";
-      if (!parentSummaryName && r.wbs && r.wbs.includes(".")){
+      if (r.isSummary || summaryWBS.has(r.wbs)) continue;
+      let parentSummaryName="";
+      if (r.wbs && r.wbs.includes(".")){
         const parentWBS = r.wbs.split(".").slice(0,-1).join(".");
         parentSummaryName = byWBS.get(parentWBS)?.name || "";
       }
-
+      const plannedStartISO = parseDateFlexible(r.start);
+      const plannedFinishISO = parseDateFlexible(r.finish);
       out.push({
         TaskUID:r.uid,
         TaskName:r.name,
         SummaryTaskName: parentSummaryName,
         Department:r.dept,
-        PlannedStart: parseDateFlexible(r.start),
-        PlannedFinish: parseDateFlexible(r.finish),
+        PlannedStart: plannedStartISO,
+        PlannedFinish: plannedFinishISO,
         PlannedStartRaw: r.start,
         PlannedFinishRaw: r.finish,
         PercentComplete: r.pct,
