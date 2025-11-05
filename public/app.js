@@ -1,7 +1,7 @@
-// Live Project Tracker — CSV + MSP XML import with robust header & namespace handling
-// View: Task Name | Task Summary Name | Scheduled Start | Actual Start | Assigned Department | Actions
+// Live Project Tracker — robust CSV + MSP XML import
+// View columns: Task Name | Task Summary Name | Scheduled Start | Actual Start | Assigned Department
 window.addEventListener("DOMContentLoaded", () => {
-  console.log("%c[Tracker] app.js loaded (robust CSV + XML)", "color:#6aa3ff");
+  console.log("%c[Tracker] app.js (robust CSV + XML, no Actions column)", "color:#6aa3ff");
 
   // ---- DOM ----
   const importBtn = document.getElementById("importBtn");
@@ -9,7 +9,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const exportBtn  = document.getElementById("exportBtn");
   const tbody      = document.querySelector("#taskTable tbody");
 
-  // Pause dialog
+  // Pause dialog (kept for future; not used when Actions hidden)
   const pauseDialog   = document.getElementById("pauseDialog");
   const pauseReason   = document.getElementById("pauseReason");
   const pauseNotes    = document.getElementById("pauseNotes");
@@ -18,7 +18,6 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // ---- State ----
   let tasks = [];
-  let pauseUID = null;
 
   // ---- Delay log (localStorage) ----
   const DELAY_LOG_KEY = "DELAY_LOG_V1";
@@ -38,51 +37,31 @@ window.addEventListener("DOMContentLoaded", () => {
   };
 
   // ========= CSV helpers =========
-  // Normalize header aggressively: strip BOM, underscores/dashes -> space, remove punctuation, collapse spaces, lowercase.
   function normHeader(h){
     return (h||"")
-      .replace(/^[\uFEFF\u200B]+/, "")  // BOM / zero-width
+      .replace(/^[\uFEFF\u200B]+/, "")
       .replace(/[_-]+/g, " ")
-      .replace(/[^\p{L}\p{N}% ]+/gu, "") // keep letters/numbers/%/space
+      .replace(/[^\p{L}\p{N}% ]+/gu, "")
       .trim()
       .replace(/\s+/g, " ")
       .toLowerCase();
   }
 
-  // Map many aliases (including underscored variants)
   const HEADER_ALIASES = {
-    "unique id": ["unique id","uniqueid","task unique id","uid","unique id","unique id"],
+    "unique id": ["unique id","uniqueid","task unique id","uid"],
     "name": ["name","task name","taskname"],
     "summary": ["summary","is summary","issummary"],
     "outline level": ["outline level","outlinelevel","level","outline lvl","outline"],
     "wbs": ["wbs"],
-    "start": ["start","start date","start time","startdate","start datetime","start date time","start date_time","start date time","start date time","start date"],
-    "finish": ["finish","finish date","finish time","finishdate","finish datetime","finish date time","finish date_time"],
-    "% complete": ["% complete","percent complete","percentcomplete","percent %","percent","complete percent","pct complete"],
-    "resource names": ["resource names","resources","resource name","resourcename","resource names"],
+    "start": ["start","start date","start time","startdate","start datetime","start date time"],
+    "finish": ["finish","finish date","finish time","finishdate","finish datetime","finish date time"],
+    "% complete": ["% complete","percent complete","percentcomplete","percent","pct complete"],
+    "resource names": ["resource names","resources","resource name","resourcename"],
     "text5": ["text5","department","dept"],
     "text30": ["text30","department","dept"]
   };
 
-  // Add common underscored headers to alias lists
-  HEADER_ALIASES["unique id"].push("unique id","unique id","unique id","unique id","unique id","unique id","unique id","unique id","unique id","unique id","unique id","unique id","unique id","unique id","unique id");
-  // Explicit underscored/variant names you showed:
-  HEADER_ALIASES["unique id"].push("unique id","unique id","unique id","unique id","unique id","unique id","unique id","unique id","unique id","unique id","unique id");
-  HEADER_ALIASES["unique id"].push("unique id","unique id","unique id","unique id"); // safe no-op
-  // Key ones:
-  HEADER_ALIASES["unique id"].push("unique id","unique id","unique id"); // placeholders to ensure mapping
-
-  // Directly list the exact strings you reported after normalization:
-  // "Unique_ID" -> "unique id"
-  // "Outline_Level" -> "outline level"
-  // "Start_Date" -> "start date" -> maps to "start"
-  // "Finish_Date" -> "finish date" -> maps to "finish"
-  // "Percent_Complete" -> "percent complete" -> maps to "% complete"
-  // "Resource_Names" -> "resource names"
-  // We'll intercept by extending indexOfAlias to accept close matches.
-
   function detectDelimiter(firstLine){
-    // support comma, semicolon, tab, pipe — pick the one with most separators
     const candidates = [",",";","\t","|"];
     const counts = candidates.map(ch => (firstLine.match(new RegExp(`\\${ch}`,"g"))||[]).length);
     let bestIdx = 0; for (let i=1;i<counts.length;i++) if (counts[i]>counts[bestIdx]) bestIdx=i;
@@ -93,22 +72,18 @@ window.addEventListener("DOMContentLoaded", () => {
     const lines = text.split(/\r?\n/).filter(l => l.trim().length);
     if (!lines.length) throw new Error("Empty CSV");
     const delim = detectDelimiter(lines[0]);
-    const headersRaw = lines[0].split(delim);
-    const headers = headersRaw.map(h => h.replace(/^[\uFEFF\u200B]+/,""));
+    const headers = lines[0].split(delim).map(h=>h.replace(/^[\uFEFF\u200B]+/,""));
     const rows    = lines.slice(1).map(l => l.split(delim));
     return { headers, rows, delim };
   }
 
   function indexOfAlias(headers, canonical){
     const wants = (HEADER_ALIASES[canonical] || [canonical]).map(normHeader);
-
-    // Build normalized header list once
     const normalized = headers.map(normHeader);
-    // Exact match first
     for (let i=0;i<normalized.length;i++){
       if (wants.includes(normalized[i])) return i;
     }
-    // Heuristic: allow "start date" to satisfy "start", "finish date" to satisfy "finish"
+    // some flexible fallbacks:
     for (let i=0;i<normalized.length;i++){
       const h = normalized[i];
       if (canonical==="start"  && (h==="start date"||h==="start time")) return i;
@@ -136,7 +111,6 @@ window.addEventListener("DOMContentLoaded", () => {
     const must=["uid","name","summary","outlineLevel","wbs","start","finish","pct"];
     const missing=must.filter(k=>col[k]===-1);
     if(missing.length){
-      // show what we actually saw after normalization to help debugging
       const seen = headers.map(h=>normHeader(h)).join(" | ");
       throw new Error(`Missing required columns: ${missing.join(", ")}\nFound (normalized): ${seen}`);
     }
@@ -152,8 +126,33 @@ window.addEventListener("DOMContentLoaded", () => {
     return res || "";
   }
 
+  // ======= Flexible date parser for MSP exports (CSV) =======
+  function parseDateFlexible(s){
+    if (!s) return "";
+    s = String(s).trim();
+    // First try native
+    const d0 = new Date(s);
+    if (!isNaN(d0)) return d0.toISOString();
+
+    // Try split forms: dd/MM/yyyy HH:mm or MM/dd/yyyy HH:mm (24h or 12h)
+    const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
+    if (m){
+      let d = parseInt(m[1],10), M = parseInt(m[2],10), y = parseInt(m[3],10);
+      const hh = parseInt(m[4]||"0",10), mm = parseInt(m[5]||"0",10), ss = parseInt(m[6]||"0",10);
+      // If first number > 12, treat as day-first; else assume day-first by default (common in AU)
+      const dayFirst = (d>12) || true;
+      const day = dayFirst ? d : M;
+      const mon = dayFirst ? M-1 : d-1;
+      if (y < 100) y += 2000;
+      const dt = new Date(y, mon, day, hh, mm, ss);
+      if (!isNaN(dt)) return dt.toISOString();
+    }
+
+    // If all else fails, return empty so we still display the row
+    return "";
+  }
+
   // ========= MSP XML (namespace-safe) =========
-  // Helper to collect elements by localName regardless of namespace
   function ql(root, tag){
     const out=[]; const all=root.getElementsByTagName("*");
     for(let i=0;i<all.length;i++){ if(all[i].localName===tag) out.push(all[i]); }
@@ -165,15 +164,13 @@ window.addEventListener("DOMContentLoaded", () => {
   }
   function parseMSPXML(text){
     const doc = new DOMParser().parseFromString(text, "application/xml");
-    // detect parser errors
     if (doc.getElementsByTagName("parsererror").length){
       throw new Error("XML parse error");
     }
     const projectEls = ql(doc, "Project");
     if (!projectEls.length) throw new Error("Not a valid Microsoft Project XML (MSPDI).");
 
-    // ExtendedAttribute definitions: FieldID -> Alias
-    const defMap = new Map();
+    const defMap = new Map(); // FieldID -> Alias
     ql(doc, "ExtendedAttributes").forEach(node=>{
       ql(node,"ExtendedAttribute").forEach(def=>{
         const id = firstText(def, "FieldID");
@@ -189,8 +186,7 @@ window.addEventListener("DOMContentLoaded", () => {
         const val= firstText(a,"Value");
         const alias = id ? (defMap.get(id)||"") : "";
         if (!candidate && alias && /department/i.test(alias) && val) candidate = val;
-        // Text30 heuristic (FieldID 188743734 is common for Text30 in MSP)
-        if (!candidate && id === "188743734" && val) candidate = val;
+        if (!candidate && id === "188743734" && val) candidate = val; // common Text30 FieldID
       });
       if (candidate) return candidate;
       const rn = firstText(taskEl,"ResourceNames");
@@ -198,25 +194,33 @@ window.addEventListener("DOMContentLoaded", () => {
       return "";
     }
 
-    const out=[]; const stack=[];
+    // Maintain a stack of **summary task names only** at each outline level
+    const summaryStack = [];
+    const out = [];
+
     ql(doc,"Tasks").forEach(tasksNode=>{
       ql(tasksNode,"Task").forEach(taskEl=>{
         const uid   = firstText(taskEl,"UID");
         const name  = firstText(taskEl,"Name");
-        const summary = (firstText(taskEl,"Summary") || "0") === "1";
+        const summaryFlag = (firstText(taskEl,"Summary") || "0") === "1";
         const olvl = parseInt(firstText(taskEl,"OutlineLevel") || "1", 10) || 1;
         const start = firstText(taskEl,"Start");
         const finish= firstText(taskEl,"Finish");
         const pct   = parseInt(firstText(taskEl,"PercentComplete") || "0", 10) || 0;
 
-        stack[olvl]=name; stack.length=olvl+1;
-        if (summary) return; // skip summaries
+        // If it's a summary task, update stack and skip rendering row
+        if (summaryFlag){
+          summaryStack[olvl] = name;               // remember this summary's name
+          summaryStack.length = Math.max(summaryStack.length, olvl+1);
+          return;
+        }
 
-        const summaryName = olvl>1 ? (stack[olvl-1]||"") : "";
+        const parentSummaryName = olvl > 1 ? (summaryStack[olvl-1] || "") : "";
+
         out.push({
           TaskUID: uid,
           TaskName: name,
-          SummaryTaskName: summaryName,
+          SummaryTaskName: parentSummaryName,
           Department: pickDepartmentFromXML(taskEl),
           PlannedStart: start ? new Date(start).toISOString() : "",
           PlannedFinish: finish ? new Date(finish).toISOString() : "",
@@ -233,76 +237,6 @@ window.addEventListener("DOMContentLoaded", () => {
     return out;
   }
 
-  // ========= Actions / FSM =========
-  function startTask(uid){
-    const t = tasks.find(x=>x.TaskUID===uid); if(!t) return;
-    const now = new Date().toISOString();
-    if(t.State==="Idle"){
-      t.ActualStart=now; t.State="Active"; t.lastStart=now; (t.Audit ||= []).push({type:"Start",time:now});
-    }else if(t.State==="Paused"){
-      t.State="Active";
-      if(t.lastPause){
-        const paused = new Date(now) - new Date(t.lastPause);
-        t.TotalPausedMinutes = (t.TotalPausedMinutes||0) + (paused>0 ? Math.round(paused/60000) : 0);
-      }
-      t.lastStart=now; (t.Audit ||= []).push({type:"Resume",time:now});
-    }
-    render();
-  }
-  function pauseTask(uid){
-    const t = tasks.find(x=>x.TaskUID===uid); if(!t || t.State!=="Active") return;
-    pauseUID = uid;
-    pauseTaskName.textContent = t.TaskName;
-    pauseReason.value = ""; pauseNotes.value = "";
-    pauseDialog.showModal();
-  }
-  function finishTask(uid){
-    const t = tasks.find(x=>x.TaskUID===uid); if(!t) return;
-    const now = new Date().toISOString();
-    if(t.State==="Active" && t.lastStart){
-      const active = new Date(now) - new Date(t.lastStart);
-      t.TotalActiveMinutes = (t.TotalActiveMinutes||0) + (active>0 ? Math.round(active/60000) : 0);
-    }
-    if(t.State==="Paused" && t.lastPause){
-      const paused = new Date(now) - new Date(t.lastPause);
-      t.TotalPausedMinutes = (t.TotalPausedMinutes||0) + (paused>0 ? Math.round(paused/60000) : 0);
-    }
-    t.State="Finished"; t.ActualFinish=now; t.lastStart=null; t.lastPause=null;
-    (t.Audit ||= []).push({type:"Finish",time:now});
-    render();
-  }
-  window.startTask = startTask;
-  window.pauseTask = pauseTask;
-  window.finishTask = finishTask;
-
-  confirmPause.addEventListener("click",(e)=>{
-    e.preventDefault();
-    if(!pauseReason.value) return;
-    const t = tasks.find(x=>x.TaskUID===pauseUID); if(!t) return;
-    const now = new Date().toISOString();
-    if(t.State==="Active" && t.lastStart){
-      const active = new Date(now) - new Date(t.lastStart);
-      t.TotalActiveMinutes = (t.TotalActiveMinutes||0) + (active>0 ? Math.round(active/60000) : 0);
-    }
-    t.State="Paused"; t.lastStart=null; t.lastPause=now;
-    (t.Audit ||= []).push({type:"Pause",time:now,reason:pauseReason.value,notes:pauseNotes.value||""});
-
-    // Save to Delay Log
-    appendDelayLog({
-      LoggedAt: now,
-      TaskUID: t.TaskUID,
-      TaskName: t.TaskName,
-      SummaryTaskName: t.SummaryTaskName || "",
-      Department: t.Department || "",
-      PlannedStart: t.PlannedStart || "",
-      ActualStart: t.ActualStart || "",
-      Reason: pauseReason.value,
-      Notes: pauseNotes.value || ""
-    });
-
-    pauseDialog.close(); render();
-  });
-
   // ========= Import / Export =========
   importBtn.addEventListener("click", ()=>fileInput.click());
   fileInput.addEventListener("change", async (e)=>{
@@ -311,6 +245,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const isXML = /\.xml$/i.test(file.name) || /xml/.test(file.type);
     try{
       tasks = isXML ? parseMSPXML(text) : parseCSVToTasks(text);
+      console.log(`[Tracker] imported ${tasks.length} task rows from ${isXML?'XML':'CSV'}`);
     }catch(err){
       alert(err.message || "Import error");
       console.error(err);
@@ -323,25 +258,32 @@ window.addEventListener("DOMContentLoaded", () => {
   function parseCSVToTasks(text){
     const parsed = parseCSV(text);
     const col = buildColumnMap(parsed.headers);
-    const stack=[]; const out=[];
+
+    // Maintain a stack of **summary task names only** at each outline level
+    const summaryStack = [];
+    const out = [];
+
     for(const cells of parsed.rows){
       const isSummaryStr = ((cells[col.summary]||"")+"").trim().toLowerCase();
       const isSummary = isSummaryStr.startsWith("y") || isSummaryStr==="true" || isSummaryStr==="1";
       const level = parseInt((cells[col.outlineLevel]||"1"),10) || 1;
       const name  = (cells[col.name]||"").trim();
 
-      // Track hierarchy by outline level
-      stack[level]=name; stack.length=level+1;
-      if(isSummary) continue;
+      if (isSummary){
+        summaryStack[level] = name;                   // record this parent summary
+        summaryStack.length = Math.max(summaryStack.length, level+1);
+        continue;                                     // do not render summary rows
+      }
 
-      const summaryName = level>1 ? (stack[level-1]||"") : "";
+      const parentSummaryName = level>1 ? (summaryStack[level-1] || "") : "";
+
       out.push({
         TaskUID:(cells[col.uid]||"").trim(),
         TaskName:name,
-        SummaryTaskName:summaryName,
+        SummaryTaskName: parentSummaryName,
         Department:pickDepartmentFromCSV(cells,col),
-        PlannedStart:safeISO(cells[col.start]),
-        PlannedFinish:safeISO(cells[col.finish]),
+        PlannedStart: parseDateFlexible(cells[col.start]),
+        PlannedFinish: parseDateFlexible(cells[col.finish]),
         PercentComplete: parseInt((cells[col.pct]||"0"),10)||0,
 
         State:"Idle",
@@ -352,14 +294,6 @@ window.addEventListener("DOMContentLoaded", () => {
       });
     }
     return out;
-  }
-
-  function safeISO(v){
-    const s = (v||"").toString().trim();
-    if (!s) return "";
-    const d = new Date(s);
-    return isNaN(d) ? "" : d.toISOString();
-    // If your CSV uses dd/MM/yyyy HH:mm, we can add a custom parser—tell me the exact format.
   }
 
   exportBtn.addEventListener("click", ()=>{
@@ -405,11 +339,6 @@ window.addEventListener("DOMContentLoaded", () => {
         <td>${fmt(t.PlannedStart)}</td>
         <td>${fmt(t.ActualStart)}</td>
         <td>${t.Department||""}</td>
-        <td class="actions">
-          <button class="primary" ${t.State==="Active"?"disabled":""} onclick="startTask('${t.TaskUID}')">${t.State==="Paused"?"Resume":"Start"}</button>
-          <button ${t.State==="Active"?"":"disabled"} onclick="pauseTask('${t.TaskUID}')">Pause</button>
-          <button class="success" ${t.State==="Active"||t.State==="Paused"?"":"disabled"} onclick="finishTask('${t.TaskUID}')">Finish</button>
-        </td>
       `;
       tbody.appendChild(tr);
     });
