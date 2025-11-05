@@ -1,20 +1,26 @@
-import express from "express";
-import path from "path";
-import { fileURLToPath } from "url";
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
+// server.js
+const express = require("express");
+const path = require("path");
 const app = express();
 
-// Serve static files (the front-end)
-app.use(express.static(path.join(__dirname, "public")));
+const PUBLIC_DIR = path.join(__dirname, "public");
 
-// Health check route (optional)
-app.get("/healthz", (_, res) => res.send("ok"));
-
-// Start the server
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => {
-  console.log(`Live Project Tracker running on port ${PORT}`);
+// Stop aggressive caching for app assets while we're iterating
+app.disable("etag");
+app.use((req, res, next) => {
+  if (/\.(js|css|html)$/.test(req.url)) {
+    res.set("Cache-Control", "no-store");
+  } else {
+    res.set("Cache-Control", "public, max-age=300");
+  }
+  next();
 });
+
+// Serve /public as the web root
+app.use(express.static(PUBLIC_DIR, { extensions: ["html"] }));
+
+// Fallback: serve index.html for unknown paths (helps with simple navigation)
+app.get("*", (req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
+
+const port = process.env.PORT || 3000;
+app.listen(port, () => console.log(`Live Project Tracker running on :${port}`));
