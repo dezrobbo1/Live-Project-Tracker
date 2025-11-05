@@ -11,6 +11,53 @@ window.addEventListener("DOMContentLoaded", () => {
   const exportBtn  = document.getElementById("exportBtn");
   const tbody      = document.querySelector("#taskTable tbody");
 
+  const stripBom = (str="") => str.replace(/^\uFEFF/, "").replace(/\u0000/g, "");
+
+  async function readFileSmart(file){
+    if (!file) return "";
+    if (file.arrayBuffer){
+      const buffer = await file.arrayBuffer();
+      if (!buffer.byteLength) return "";
+      const view = new Uint8Array(buffer);
+      const tryDecode = (label, start=0) => {
+        try {
+          return new TextDecoder(label).decode(start ? buffer.slice(start) : buffer);
+        } catch {
+          return null;
+        }
+      };
+
+      if (view[0] === 0xFF && view[1] === 0xFE){
+        return stripBom(tryDecode("utf-16le", 2) || tryDecode("utf-16le") || "");
+      }
+      if (view[0] === 0xFE && view[1] === 0xFF){
+        return stripBom(tryDecode("utf-16be", 2) || tryDecode("utf-16be") || "");
+      }
+      if (view.length >= 3 && view[0] === 0xEF && view[1] === 0xBB && view[2] === 0xBF){
+        return stripBom(tryDecode("utf-8", 3) || "");
+      }
+
+      if (view[0] === 0x00 && view[1] !== 0x00){
+        const decoded = tryDecode("utf-16be");
+        if (decoded) return stripBom(decoded);
+      }
+      if (view[0] !== 0x00 && view[1] === 0x00){
+        const decoded = tryDecode("utf-16le");
+        if (decoded) return stripBom(decoded);
+      }
+
+      const utf8 = tryDecode("utf-8");
+      if (utf8) return stripBom(utf8);
+    }
+
+    if (file.text){
+      const text = await file.text();
+      return stripBom(text);
+    }
+
+    return "";
+  }
+
   // Pause dialog
   const pauseDialog   = document.getElementById("pauseDialog");
   const pauseReason   = document.getElementById("pauseReason");
@@ -278,7 +325,7 @@ window.addEventListener("DOMContentLoaded", () => {
   importBtn?.addEventListener("click", ()=>fileInput?.click());
   fileInput?.addEventListener("change", async (e)=>{
     const file=e.target.files?.[0]; if(!file) return;
-    const text = await file.text();
+    const text = await readFileSmart(file);
     const isXML = /\.xml$/i.test(file.name) || /xml/.test(file.type);
     try{
       tasks = isXML ? parseMSPXML(text) : parseCSVToTasks(text);
@@ -493,6 +540,7 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   function render(){
+    if (!tbody) return;
     const {start,end}=windowRange3d();
     const winStart = start.getTime();
     const winEnd = end.getTime();
@@ -556,8 +604,10 @@ window.addEventListener("DOMContentLoaded", () => {
     });
 
     const notice = document.getElementById("notice");
-    notice.textContent = tasks.length
-      ? "Showing a 3-day forecast (today → +2 days)."
-      : "Import a Microsoft Project CSV or XML to begin. Showing a 3-day forecast (today → +2 days).";
+    if (notice){
+      notice.textContent = tasks.length
+        ? "Showing a 3-day forecast (today → +2 days)."
+        : "Import a Microsoft Project CSV or XML to begin. Showing a 3-day forecast (today → +2 days).";
+    }
   }
 });
