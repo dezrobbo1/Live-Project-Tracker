@@ -1,7 +1,7 @@
-// Live Project Tracker — CSV + Microsoft Project XML (MSPDI) import
+// Live Project Tracker — CSV + MSP XML importer (robust header + namespace-safe)
 // Columns: Task Name | Task Summary Name | Scheduled Start | Actual Start | Assigned Department | Actions
 window.addEventListener("DOMContentLoaded", () => {
-  console.log("%c[Tracker] app.js loaded (CSV + MSP XML importer)", "color:#6aa3ff");
+  console.log("%c[Tracker] app.js loaded (robust CSV+XML)", "color:#6aa3ff");
 
   // ---- DOM ----
   const importBtn = document.getElementById("importBtn");
@@ -22,20 +22,11 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // ---- Delay log (localStorage) ----
   const DELAY_LOG_KEY = "DELAY_LOG_V1";
-  function readDelayLog(){
-    try { return JSON.parse(localStorage.getItem(DELAY_LOG_KEY) || "[]"); }
-    catch { return []; }
-  }
-  function writeDelayLog(arr){
-    localStorage.setItem(DELAY_LOG_KEY, JSON.stringify(arr));
-  }
-  function appendDelayLog(entry){
-    const arr = readDelayLog();
-    arr.push(entry);
-    writeDelayLog(arr);
-  }
+  const readDelayLog = () => { try { return JSON.parse(localStorage.getItem(DELAY_LOG_KEY) || "[]"); } catch { return []; } };
+  const writeDelayLog = (arr) => localStorage.setItem(DELAY_LOG_KEY, JSON.stringify(arr));
+  const appendDelayLog = (e) => writeDelayLog([...readDelayLog(), e]);
 
-  // Expose a hard reset for the Clear button
+  // Clear button is inline in HTML
   window.clearProject = () => {
     if (!confirm("Clear current project data?")) return;
     tasks = [];
@@ -46,38 +37,55 @@ window.addEventListener("DOMContentLoaded", () => {
     console.log("[Tracker] project cleared");
   };
 
-  // ---- CSV helpers (header tolerant) ----
-  const norm = (h) => h.replace(/^\uFEFF/,"").trim().toLowerCase().replace(/\s+/g," ");
-  const HEADER_ALIASES = {
-    "unique id": ["unique id","uniqueid","task unique id","uid"],
-    "name": ["name","task name","taskname"],
-    "summary": ["summary","is summary","issummary"],
-    "outline level": ["outline level","outlinelevel","level"],
-    "wbs": ["wbs"],
-    "start": ["start","start date","start time","startdate"],
-    "finish": ["finish","finish date","finish time","finishdate"],
-    "% complete": ["% complete","percent complete","percentcomplete","%complete"],
-    "resource names": ["resource names","resources","resource name","resourcename"],
-    "text5": ["text5","department","dept"],
-    "text30": ["text30","department","dept"]
-  };
+  // ---- CSV helpers (VERY tolerant) ----
+  // Normalize header: strip BOM, lowercase, replace underscores with spaces, collapse spaces, remove surrounding punctuation.
+  function normHeader(h){
+    return (h || "")
+      .replace(/^\uFEFF/, "")       // BOM
+      .replace(/[^\S\r\n]+/g, " ")  // whitespace to single space
+      .replace(/_/g, " ")           // underscores -> spaces
+      .toLowerCase()
+      .replace(/\s+/g, " ")         // collapse spaces
+      .trim();
+  }
   function detectDelimiter(firstLine){
     const c=(firstLine.match(/,/g)||[]).length;
     const s=(firstLine.match(/;/g)||[]).length;
+    const t=(firstLine.match(/\t/g)||[]).length;
+    if (t > c && t > s) return "\t";
     return s>c?';':',';
   }
   function parseCSV(text){
     const lines=text.split(/\r?\n/).filter(l=>l.trim().length);
     if(!lines.length) throw new Error("Empty CSV");
     const delim = detectDelimiter(lines[0]);
-    const headers = lines[0].split(delim).map(h=>h.replace(/^\uFEFF/,''));
+    const headersRaw = lines[0].split(delim);
+    const headers = headersRaw.map(h=>h.replace(/^\uFEFF/,''));
     const rows    = lines.slice(1).map(l=>l.split(delim));
     return {headers, rows, delim};
   }
+
+  // Canonical names -> list of aliases; we match AFTER normHeader()
+  const HEADER_ALIASES = {
+    "unique id": ["unique id","uniqueid","task unique id","uid","id"],
+    "name": ["name","task name","taskname"],
+    "summary": ["summary","is summary","issummary","summary flag"],
+    "outline level": ["outline level","outlinelevel","level"],
+    "wbs": ["wbs"],
+    "start": ["start","start date","start time","startdate","scheduled start","planned start","start_date","start time"],
+    "finish": ["finish","finish date","finish time","finishdate","scheduled finish","planned finish","finish_date","finish time"],
+    "% complete": ["% complete","percent complete","percentcomplete","%complete","percent_complete"],
+    "resource names": ["resource names","resources","resource name","resourcename","resource_names"],
+    "text5": ["text5","department","dept","dept code"],
+    "text30": ["text30","department","dept","assigned department","assigned_department"]
+  };
+
   function indexOfAlias(headers, canonical){
-    const wants = HEADER_ALIASES[canonical] || [canonical];
-    return headers.findIndex(h => wants.includes(norm(h)));
+    const wants = (HEADER_ALIASES[canonical] || [canonical]).map(normHeader);
+    const normalized = headers.map(normHeader);
+    return normalized.findIndex(h => wants.includes(h));
   }
+
   function buildColumnMap(headers){
     const col = {
       uid : indexOfAlias(headers,"unique id"),
@@ -108,50 +116,86 @@ window.addEventListener("DOMContentLoaded", () => {
     return res || "";
   }
 
-  // ---- MSP XML (MSPDI) importer ----
+  // ---- Namespace-safe XML helpers (MSPDI)
+  // CSS selectors don’t play nice with default namespaces. Use localName-based queries.
+  function byLocalName(root, name){
+    const out=[];
+    const all = root.getElementsByTagName("*");
+    for(let i=0;i<all.length;i++){
+      if (all[i].localName === name) out.push(all[i]);
+    }
+    return out;
+  }
+  function oneLocal(root, name){
+    const arr = byLocalName(root, name);
+    return arr.length ? arr[0] : null;
+  }
+  function textOf(el, name){
+    const n = oneLocal(el, name);
+    return n ? (n.textContent || "").trim() : "";
+  }
+
   function parseMSPXML(text){
     const doc = new DOMParser().parseFromString(text, "application/xml");
-    const proj = doc.querySelector("Project");
-    if (!proj) throw new Error("Not a valid Microsoft Project XML (MSPDI).");
+    // Check for parsererror
+    if (doc.getElementsByTagName("parsererror").length){
+      throw new Error("XML parse error");
+    }
+    const project = oneLocal(doc, "Project");
+    if (!project) throw new Error("Not a valid Microsoft Project XML (MSPDI)");
 
-    const defMap = new Map(); // FieldID -> Alias
-    doc.querySelectorAll("ExtendedAttributes > ExtendedAttribute").forEach(def=>{
-      const id = def.querySelector("FieldID")?.textContent?.trim();
-      const alias = def.querySelector("Alias")?.textContent?.trim() || "";
-      if (id) defMap.set(id, alias);
+    // ExtendedAttribute definitions: FieldID -> Alias
+    const defMap = new Map();
+    const extDefs = byLocalName(project, "ExtendedAttribute");
+    extDefs.forEach(def=>{
+      // Only the ones under <ExtendedAttributes> at project level have FieldID+Alias
+      const parent = def.parentElement;
+      if (parent && parent.localName === "ExtendedAttributes" && parent.parentElement === project){
+        const id = textOf(def, "FieldID");
+        const alias = textOf(def, "Alias");
+        if (id) defMap.set(id, alias||"");
+      }
     });
 
     function pickDepartmentFromXML(taskEl){
+      // Task-level ExtendedAttribute children
+      const taskAttrs = byLocalName(taskEl, "ExtendedAttribute");
       let candidate = "";
-      const attrs = taskEl.querySelectorAll("ExtendedAttribute");
-      attrs.forEach(a=>{
-        const id = a.querySelector("FieldID")?.textContent?.trim();
-        const val = a.querySelector("Value")?.textContent?.trim() || "";
+      taskAttrs.forEach(a=>{
+        // <FieldID> under this ExtendedAttribute
+        const id = textOf(a, "FieldID");
+        const val = textOf(a, "Value");
         const alias = id ? (defMap.get(id) || "") : "";
         if (!candidate && alias && /department/i.test(alias) && val) candidate = val;
-        if (!candidate && id === "188743734" && val) candidate = val; // Text30 heuristic
+        // Heuristic: Text30 = FieldID 188743734 (common MSP mapping)
+        if (!candidate && id === "188743734" && val) candidate = val;
       });
       if (candidate) return candidate;
-      const rn = taskEl.querySelector("ResourceNames")?.textContent?.trim() || "";
+      const rn = textOf(taskEl, "ResourceNames");
       if (rn) return rn.split(",")[0].trim();
       return "";
     }
 
-    const stack = [];
     const out = [];
-    doc.querySelectorAll("Tasks > Task").forEach(taskEl=>{
-      const uid   = taskEl.querySelector("UID")?.textContent?.trim() || "";
-      const name  = taskEl.querySelector("Name")?.textContent?.trim() || "";
-      const summary = (taskEl.querySelector("Summary")?.textContent?.trim() || "0") === "1";
-      const olvl = parseInt(taskEl.querySelector("OutlineLevel")?.textContent || "1", 10) || 1;
-      const start = taskEl.querySelector("Start")?.textContent?.trim() || "";
-      const finish= taskEl.querySelector("Finish")?.textContent?.trim() || "";
-      const pct   = parseInt(taskEl.querySelector("PercentComplete")?.textContent || "0", 10) || 0;
+    const tasksEl = oneLocal(project, "Tasks");
+    if (!tasksEl) return out;
 
-      stack[olvl] = name; stack.length = olvl + 1;
-      if (summary) return;
+    const stack = [];
+    const taskNodes = byLocalName(tasksEl, "Task");
+    taskNodes.forEach(taskEl=>{
+      const uid   = textOf(taskEl, "UID");
+      const name  = textOf(taskEl, "Name");
+      const summary = textOf(taskEl, "Summary") === "1";
+      const olvl = parseInt(textOf(taskEl, "OutlineLevel") || "1", 10) || 1;
+      const start = textOf(taskEl, "Start");
+      const finish= textOf(taskEl, "Finish");
+      const pct   = parseInt(textOf(taskEl, "PercentComplete") || "0", 10) || 0;
 
-      const summaryName = olvl > 1 ? (stack[olvl - 1] || "") : "";
+      stack[olvl] = name;
+      stack.length = olvl + 1;
+
+      if (summary) return; // skip summary rows in table
+      const summaryName = olvl > 1 ? (stack[olvl-1] || "") : "";
 
       out.push({
         TaskUID: uid,
@@ -170,6 +214,7 @@ window.addEventListener("DOMContentLoaded", () => {
       });
     });
 
+    console.log(`[Tracker] XML import: ${out.length} tasks`);
     return out;
   }
 
@@ -181,7 +226,7 @@ window.addEventListener("DOMContentLoaded", () => {
     return {start,end};
   }
   function overlaps(ps,pf,win){ return ps<=win.end.getTime() && pf>=win.start.getTime(); }
-  function fmt(ts){ if(!ts) return ""; return new Date(ts).toLocaleString(); }
+  function fmt(ts){ if(!ts) return ""; const d=new Date(ts); return isNaN(d)? "": d.toLocaleString(); }
 
   // ---- Actions / FSM ----
   function startTask(uid){
@@ -237,7 +282,7 @@ window.addEventListener("DOMContentLoaded", () => {
     t.State="Paused"; t.lastStart=null; t.lastPause=now;
     (t.Audit ||= []).push({type:"Pause",time:now,reason:pauseReason.value,notes:pauseNotes.value||""});
 
-    // 🔴 Save to Delay Log
+    // Save to Delay Log
     appendDelayLog({
       LoggedAt: now,
       TaskUID: t.TaskUID,
@@ -262,6 +307,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
     try{
       tasks = isXML ? parseMSPXML(text) : parseCSVToTasks(text);
+      console.log(`[Tracker] Imported ${tasks.length} tasks from ${isXML ? "XML" : "CSV"}`);
     }catch(err){
       alert(err.message || "Import error");
       console.error(err);
@@ -276,6 +322,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const col = buildColumnMap(parsed.headers);
     const stack=[]; const out=[];
     for(const cells of parsed.rows){
+      if (!cells || cells.length===0) continue;
       const isSummaryStr = ((cells[col.summary]||"")+"").trim().toLowerCase();
       const isSummary = isSummaryStr.startsWith("y") || isSummaryStr==="true" || isSummaryStr==="1";
       const level = parseInt((cells[col.outlineLevel]||"1"),10) || 1;
@@ -290,8 +337,8 @@ window.addEventListener("DOMContentLoaded", () => {
         TaskName:name,
         SummaryTaskName:summaryName,
         Department:pickDepartmentFromCSV(cells,col),
-        PlannedStart:new Date(cells[col.start]).toISOString(),
-        PlannedFinish:new Date(cells[col.finish]).toISOString(),
+        PlannedStart: cells[col.start] ? new Date(cells[col.start]).toISOString() : "",
+        PlannedFinish: cells[col.finish] ? new Date(cells[col.finish]).toISOString() : "",
         PercentComplete: parseInt((cells[col.pct]||"0"),10)||0,
 
         State:"Idle",
