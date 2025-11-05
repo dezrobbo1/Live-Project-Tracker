@@ -7,12 +7,40 @@ window.addEventListener("DOMContentLoaded", () => {
   const clearBtn  = document.getElementById("clearDelayBtn");
   const DELAY_LOG_KEY = "DELAY_LOG_V1";
 
+  function sanitize(entries){
+    if (!Array.isArray(entries)) return [];
+    const cleaned = [];
+    for (const raw of entries){
+      if (!raw || typeof raw !== "object") continue;
+      const entry = {
+        LoggedAt: raw.LoggedAt || raw.loggedAt || "",
+        TaskUID: raw.TaskUID || raw.uid || "",
+        TaskName: raw.TaskName || raw.taskName || "",
+        SummaryTaskName: raw.SummaryTaskName || raw.summaryTaskName || "",
+        Department: raw.Department || raw.department || "",
+        PlannedStart: raw.PlannedStart || raw.plannedStart || "",
+        ActualStart: raw.ActualStart || raw.actualStart || "",
+        Reason: raw.Reason || raw.reason || "",
+        Notes: raw.Notes || raw.notes || ""
+      };
+      const hasContent = Boolean(
+        (entry.Reason && entry.Reason.toString().trim()) ||
+        (entry.Notes && entry.Notes.toString().trim()) ||
+        (entry.TaskName && entry.TaskName.toString().trim()) ||
+        (entry.TaskUID && entry.TaskUID.toString().trim())
+      );
+      if (!hasContent) continue;
+      cleaned.push(entry);
+    }
+    return cleaned;
+  }
+
   function readDelayLog(){
-    try { return JSON.parse(localStorage.getItem(DELAY_LOG_KEY) || "[]"); }
+    try { return sanitize(JSON.parse(localStorage.getItem(DELAY_LOG_KEY) || "[]")); }
     catch { return []; }
   }
   function writeDelayLog(arr){
-    localStorage.setItem(DELAY_LOG_KEY, JSON.stringify(arr));
+    localStorage.setItem(DELAY_LOG_KEY, JSON.stringify(sanitize(arr)));
   }
 
   function fmt(ts){
