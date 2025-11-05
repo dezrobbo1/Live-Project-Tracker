@@ -9,6 +9,8 @@ window.addEventListener("DOMContentLoaded", () => {
   const importBtn = document.getElementById("importBtn");
   const fileInput  = document.getElementById("fileInput");
   const exportBtn  = document.getElementById("exportBtn");
+  const delayBtn   = document.getElementById("delayBtn");
+  const clearBtn   = document.getElementById("clearBtn");
   const tbody      = document.querySelector("#taskTable tbody");
 
   const stripBom = (str="") => str.replace(/^\uFEFF/, "").replace(/\u0000/g, "");
@@ -89,9 +91,53 @@ window.addEventListener("DOMContentLoaded", () => {
   render();
 
   // Delay log helpers
-  const readDelayLog  = () => { try { return JSON.parse(localStorage.getItem(DELAY_LOG_KEY)||"[]"); } catch { return []; } };
-  const writeDelayLog = (arr) => localStorage.setItem(DELAY_LOG_KEY, JSON.stringify(arr));
-  const appendDelayLog= (entry) => { const a=readDelayLog(); a.push(entry); writeDelayLog(a); };
+  function sanitizeDelayLogEntries(arr){
+    if (!Array.isArray(arr)) return [];
+    const cleaned = [];
+    for (const raw of arr){
+      if (!raw || typeof raw !== "object") continue;
+      const entry = {
+        LoggedAt: raw.LoggedAt || raw.loggedAt || "",
+        TaskUID: raw.TaskUID || raw.uid || "",
+        TaskName: raw.TaskName || raw.taskName || "",
+        SummaryTaskName: raw.SummaryTaskName || raw.summaryTaskName || "",
+        Department: raw.Department || raw.department || "",
+        PlannedStart: raw.PlannedStart || raw.plannedStart || "",
+        ActualStart: raw.ActualStart || raw.actualStart || "",
+        Reason: raw.Reason || raw.reason || "",
+        Notes: raw.Notes || raw.notes || ""
+      };
+      const hasContent = Boolean(
+        (entry.Reason && entry.Reason.toString().trim()) ||
+        (entry.Notes && entry.Notes.toString().trim()) ||
+        (entry.TaskName && entry.TaskName.toString().trim()) ||
+        (entry.TaskUID && entry.TaskUID.toString().trim())
+      );
+      if (!hasContent) continue;
+      cleaned.push(entry);
+    }
+    return cleaned;
+  }
+
+  const readDelayLog  = () => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(DELAY_LOG_KEY)||"[]");
+      return sanitizeDelayLogEntries(parsed);
+    } catch {
+      return [];
+    }
+  };
+  const writeDelayLog = (arr) => {
+    const sanitized = sanitizeDelayLogEntries(arr);
+    localStorage.setItem(DELAY_LOG_KEY, JSON.stringify(sanitized));
+  };
+  const appendDelayLog= (entry) => {
+    const a = readDelayLog();
+    a.push(entry);
+    writeDelayLog(a);
+  };
+  // Clean any stray placeholder entries left by older builds once on load.
+  writeDelayLog(readDelayLog());
 
   // Clear button (called from index.html)
   window.clearProject = () => {
@@ -334,7 +380,27 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   // ========= Import / Export =========
-  importBtn?.addEventListener("click", ()=>fileInput?.click());
+  function triggerImport(){
+    if (fileInput && typeof fileInput.click === "function"){
+      fileInput.click();
+    }
+  }
+  window.triggerImport = triggerImport;
+
+  function exportActuals(){
+    const today=new Date();
+    const yyyy=today.getFullYear(), mm=String(today.getMonth()+1).padStart(2,"0"), dd=String(today.getDate()).padStart(2,"0");
+    const shiftDate=`${yyyy}-${mm}-${dd}`;
+    const rows = tasks.map(t=>[
+      t.TaskUID, shiftDate, t.ActualStart||"", t.ActualFinish||"", t.TotalActiveMinutes||0, t.TotalPausedMinutes||0
+    ].join(","));
+    const csv = ["TaskUID,ShiftDate,ActualStart,ActualFinish,TotalActiveMinutes,TotalPausedMinutes", ...rows].join("\n");
+    const blob=new Blob([csv],{type:"text/csv"});
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`shift_actuals_${shiftDate}.csv`; a.click();
+  }
+  window.exportActuals = exportActuals;
+
+  importBtn?.addEventListener("click", triggerImport);
   fileInput?.addEventListener("change", async (e)=>{
     const file=e.target.files?.[0]; if(!file) return;
     const text = await readFileSmart(file);
@@ -429,17 +495,9 @@ window.addEventListener("DOMContentLoaded", () => {
     return out;
   }
 
-  exportBtn?.addEventListener("click", ()=>{
-    const today=new Date();
-    const yyyy=today.getFullYear(), mm=String(today.getMonth()+1).padStart(2,"0"), dd=String(today.getDate()).padStart(2,"0");
-    const shiftDate=`${yyyy}-${mm}-${dd}`;
-    const rows = tasks.map(t=>[
-      t.TaskUID, shiftDate, t.ActualStart||"", t.ActualFinish||"", t.TotalActiveMinutes||0, t.TotalPausedMinutes||0
-    ].join(","));
-    const csv = ["TaskUID,ShiftDate,ActualStart,ActualFinish,TotalActiveMinutes,TotalPausedMinutes", ...rows].join("\n");
-    const blob=new Blob([csv],{type:"text/csv"});
-    const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`shift_actuals_${shiftDate}.csv`; a.click();
-  });
+  exportBtn?.addEventListener("click", exportActuals);
+  delayBtn?.addEventListener("click", () => { window.location.href = "/delay.html"; });
+  clearBtn?.addEventListener("click", () => { window.clearProject(); });
 
   // ========= Actions / FSM =========
   function startTask(uid){
