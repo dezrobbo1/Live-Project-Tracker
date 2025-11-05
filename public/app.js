@@ -24,19 +24,11 @@ window.addEventListener("DOMContentLoaded", () => {
   let tasks = [];
   let pauseUID = null;
 
-  function save() {
-    try { localStorage.setItem(STORE_KEY, JSON.stringify(tasks)); }
-    catch (e) { console.warn("Could not save to localStorage", e); }
-  }
-  function load() {
-    try {
-      const raw = localStorage.getItem(STORE_KEY);
-      if (!raw) return [];
-      const arr = JSON.parse(raw);
-      if (!Array.isArray(arr)) return [];
-      return arr;
-    } catch { return []; }
-  }
+  const save = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify(tasks)); } catch {} };
+  const load = () => {
+    try { const raw = localStorage.getItem(STORE_KEY); const arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr : []; }
+    catch { return []; }
+  };
 
   // Initial restore (so returning from delay.html keeps your project)
   tasks = load();
@@ -61,13 +53,8 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // ========= CSV helpers (tolerant headers / delimiters) =========
   function normHeader(h){
-    return (h||"")
-      .replace(/^[\uFEFF\u200B]+/, "")
-      .replace(/[_-]+/g, " ")
-      .replace(/[^\p{L}\p{N}%\. ]+/gu, "")
-      .trim()
-      .replace(/\s+/g, " ")
-      .toLowerCase();
+    return (h||"").replace(/^[\uFEFF\u200B]+/, "").replace(/[_-]+/g, " ").replace(/[^\p{L}\p{N}%\. ]+/gu, "")
+      .trim().replace(/\s+/g, " ").toLowerCase();
   }
   const HEADER_ALIASES = {
     "unique id": ["unique id","uniqueid","task unique id","uid","unique id."],
@@ -98,10 +85,7 @@ window.addEventListener("DOMContentLoaded", () => {
   function indexOfAlias(headers, canonical){
     const wants = (HEADER_ALIASES[canonical] || [canonical]).map(normHeader);
     const normalized = headers.map(normHeader);
-    for (let i=0;i<normalized.length;i++){
-      if (wants.includes(normalized[i])) return i;
-    }
-    // loose fallbacks
+    for (let i=0;i<normalized.length;i++) if (wants.includes(normalized[i])) return i;
     for (let i=0;i<normalized.length;i++){
       const h = normalized[i];
       if (canonical==="start"  && (h==="start date"||h==="start time")) return i;
@@ -135,44 +119,27 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // ======= Robust date parser for MSP CSV / locales =======
   function parseDateFlexible(s){
-    if (!s) return "";
-    s = String(s).trim();
+    if (!s) return ""; s = String(s).trim();
+    s = s.replace(/\b(mon|tue|wed|thu|fri|sat|sun)(day)?\b[\s,]*/i, ""); // strip weekday
+    s = s.replace(/,/g, "").replace(/\ba\.?m\.?\b/i,"AM").replace(/\bp\.?m\.?\b/i,"PM");
+    let d = new Date(s); if (!isNaN(d)) return d.toISOString();
 
-    // strip weekday names and commas (e.g., "Fri 01/11/25 8:00 a.m.")
-    s = s.replace(/\b(mon|tue|wed|thu|fri|sat|sun)(day)?\b[\s,]*/i, "");
-    s = s.replace(/,/g, "");
-    // normalise a.m./p.m. -> AM/PM
-    s = s.replace(/\ba\.?m\.?\b/i, "AM").replace(/\bp\.?m\.?\b/i, "PM");
-
-    // native
-    let d = new Date(s);
-    if (!isNaN(d)) return d.toISOString();
-
-    // dd/MM/yyyy HH:mm[:ss] [AM/PM]
     let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i);
     if (m){
-      let day = +m[1], mon = +m[2]-1, yr = +m[3]; if (yr<100) yr+=2000;
-      let hh = +(m[4]||0), mm = +(m[5]||0), ss = +(m[6]||0);
-      const ap = m[7];
-      if (ap){ if (/pm/i.test(ap) && hh<12) hh+=12; if (/am/i.test(ap) && hh===12) hh=0; }
-      d = new Date(yr, mon, day, hh, mm, ss);
-      if (!isNaN(d)) return d.toISOString();
+      let day=+m[1], mon=+m[2]-1, yr=+m[3]; if (yr<100) yr+=2000;
+      let hh=+(m[4]||0), mm=+(m[5]||0), ss=+(m[6]||0); const ap=m[7];
+      if (ap){ if (/pm/i.test(ap)&&hh<12) hh+=12; if (/am/i.test(ap)&&hh===12) hh=0; }
+      d = new Date(yr,mon,day,hh,mm,ss); if(!isNaN(d)) return d.toISOString();
     }
-
-    // 05 Nov 2025 08:00 [AM/PM]
     m = s.match(/^(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i);
     if (m){
       const monMap={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
       const monIdx = monMap[m[2].slice(0,3).toLowerCase()];
-      let yr = +m[3]; if (yr<100) yr+=2000;
-      let hh = +(m[4]||0), mm = +(m[5]||0), ss = +(m[6]||0);
-      const ap = m[7];
-      if (ap){ if (/pm/i.test(ap) && hh<12) hh+=12; if (/am/i.test(ap) && hh===12) hh=0; }
-      d = new Date(yr, monIdx, +m[1], hh, mm, ss);
-      if (!isNaN(d)) return d.toISOString();
+      let yr=+m[3]; if(yr<100) yr+=2000; let hh=+(m[4]||0), mm=+(m[5]||0), ss=+(m[6]||0); const ap=m[7];
+      if (ap){ if (/pm/i.test(ap)&&hh<12) hh+=12; if (/am/i.test(ap)&&hh===12) hh=0; }
+      d = new Date(yr,monIdx,+m[1],hh,mm,ss); if(!isNaN(d)) return d.toISOString();
     }
-
-    return ""; // leave blank if unknown
+    return "";
   }
 
   // ========= MSP XML (namespace-safe) =========
@@ -206,7 +173,7 @@ window.addEventListener("DOMContentLoaded", () => {
       return result;
     }
 
-    // Build map of WBS -> Task (includes summaries)
+    // Build map of WBS -> Task (includes summaries); then emit only non-summaries
     const allTasks = [];
     ql(doc,"Tasks").forEach(tasksNode=>{
       ql(tasksNode,"Task").forEach(taskEl=>{
@@ -223,6 +190,7 @@ window.addEventListener("DOMContentLoaded", () => {
         });
       });
     });
+
     const byWBS = new Map(allTasks.map(t=>[t.wbs,t]));
     const out=[];
     for(const t of allTasks){
@@ -260,9 +228,7 @@ window.addEventListener("DOMContentLoaded", () => {
       tasks = isXML ? parseMSPXML(text) : parseCSVToTasks(text);
       save();
       console.log(`[Tracker] imported ${tasks.length} task rows from ${isXML?'XML':'CSV'}`);
-      console.table(tasks.slice(0,5).map(t=>({
-        UID:t.TaskUID, Name:t.TaskName, Summary:t.SummaryTaskName, Start:t.PlannedStart, Dept:t.Department
-      })));
+      console.table(tasks.slice(0,5).map(t=>({ UID:t.TaskUID, Name:t.TaskName, Summary:t.SummaryTaskName, Start:t.PlannedStart, Dept:t.Department })));
     }catch(err){
       alert(err.message || "Import error");
       console.error(err);
@@ -344,8 +310,7 @@ window.addEventListener("DOMContentLoaded", () => {
         }
         t.lastStart=now; (t.Audit ||= []).push({type:"Resume",time:now});
       }
-      save();
-      render();
+      save(); render();
     }catch(e){ console.error("startTask error", e); }
   }
   function pauseTask(uid){
@@ -371,11 +336,9 @@ window.addEventListener("DOMContentLoaded", () => {
       }
       t.State="Finished"; t.ActualFinish=now; t.lastStart=null; t.lastPause=null;
       (t.Audit ||= []).push({type:"Finish",time:now});
-      save();
-      render();
+      save(); render();
     }catch(e){ console.error("finishTask error", e); }
   }
-  // expose globally so inline onclick works even after reloads
   window.startTask = startTask;
   window.pauseTask = pauseTask;
   window.finishTask = finishTask;
