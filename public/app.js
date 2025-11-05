@@ -373,25 +373,12 @@ window.addEventListener("DOMContentLoaded", () => {
       }
     });
 
-    const outlineStack = [];
-    rows.forEach((r, idx) => {
-      while (outlineStack.length && outlineStack[outlineStack.length - 1].level >= r.level){
-        outlineStack.pop();
-      }
-      r.parentSummaryName = outlineStack.length ? outlineStack[outlineStack.length - 1].name : "";
-      const nextLevel = rows[idx + 1]?.level ?? 0;
-      const hasOutlineChild = nextLevel > r.level;
-      const hasWbsChild = r.wbs && summaryWBS.has(r.wbs);
-      r.effectiveSummary = !!(r.isSummary || hasOutlineChild || hasWbsChild);
-      outlineStack.push(r);
-    });
-
     // Emit only working tasks
     const out=[];
     for(const r of rows){
-      if (r.effectiveSummary) continue;
-      let parentSummaryName = r.parentSummaryName || "";
-      if (!parentSummaryName && r.wbs && r.wbs.includes(".")){
+      if (r.isSummary || summaryWBS.has(r.wbs)) continue;
+      let parentSummaryName="";
+      if (r.wbs && r.wbs.includes(".")){
         const parentWBS = r.wbs.split(".").slice(0,-1).join(".");
         parentSummaryName = byWBS.get(parentWBS)?.name || "";
       }
