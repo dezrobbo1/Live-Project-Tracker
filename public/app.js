@@ -11,6 +11,53 @@ window.addEventListener("DOMContentLoaded", () => {
   const exportBtn  = document.getElementById("exportBtn");
   const tbody      = document.querySelector("#taskTable tbody");
 
+  const stripBom = (str="") => str.replace(/^\uFEFF/, "").replace(/\u0000/g, "");
+
+  async function readFileSmart(file){
+    if (!file) return "";
+    if (file.arrayBuffer){
+      const buffer = await file.arrayBuffer();
+      if (!buffer.byteLength) return "";
+      const view = new Uint8Array(buffer);
+      const tryDecode = (label, start=0) => {
+        try {
+          return new TextDecoder(label).decode(start ? buffer.slice(start) : buffer);
+        } catch {
+          return null;
+        }
+      };
+
+      if (view[0] === 0xFF && view[1] === 0xFE){
+        return stripBom(tryDecode("utf-16le", 2) || tryDecode("utf-16le") || "");
+      }
+      if (view[0] === 0xFE && view[1] === 0xFF){
+        return stripBom(tryDecode("utf-16be", 2) || tryDecode("utf-16be") || "");
+      }
+      if (view.length >= 3 && view[0] === 0xEF && view[1] === 0xBB && view[2] === 0xBF){
+        return stripBom(tryDecode("utf-8", 3) || "");
+      }
+
+      if (view[0] === 0x00 && view[1] !== 0x00){
+        const decoded = tryDecode("utf-16be");
+        if (decoded) return stripBom(decoded);
+      }
+      if (view[0] !== 0x00 && view[1] === 0x00){
+        const decoded = tryDecode("utf-16le");
+        if (decoded) return stripBom(decoded);
+      }
+
+      const utf8 = tryDecode("utf-8");
+      if (utf8) return stripBom(utf8);
+    }
+
+    if (file.text){
+      const text = await file.text();
+      return stripBom(text);
+    }
+
+    return "";
+  }
+
   // Pause dialog
   const pauseDialog   = document.getElementById("pauseDialog");
   const pauseReason   = document.getElementById("pauseReason");
@@ -24,6 +71,13 @@ window.addEventListener("DOMContentLoaded", () => {
   let tasks = [];
   let pauseUID = null;
 
+  function upgradeTask(task){
+    if (!task || typeof task !== "object") return task;
+    if (!("PlannedStartRaw" in task)) task.PlannedStartRaw = task.PlannedStart || "";
+    if (!("PlannedFinishRaw" in task)) task.PlannedFinishRaw = task.PlannedFinish || "";
+    return task;
+  }
+
   const save = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify(tasks)); } catch {} };
   const load = () => {
     try { const raw = localStorage.getItem(STORE_KEY); const arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr : []; }
@@ -31,7 +85,7 @@ window.addEventListener("DOMContentLoaded", () => {
   };
 
   // Initial restore (so returning from delay.html keeps your project)
-  tasks = load();
+  tasks = load().map(upgradeTask);
   render();
 
   // Delay log helpers
@@ -59,28 +113,85 @@ window.addEventListener("DOMContentLoaded", () => {
   const HEADER_ALIASES = {
     "unique id": ["unique id","uniqueid","task unique id","uid","unique id."],
     "name": ["name","task name","taskname"],
+    // old "Summary" (Y/N) is optional now; keep aliases but we'll not require it
     "summary": ["summary","is summary","issummary"],
+
     "outline level": ["outline level","outlinelevel","level","outline lvl","outline"],
     "wbs": ["wbs"],
-    "start": ["start","start date","start time","startdate","start datetime","start date time"],
-    "finish": ["finish","finish date","finish time","finishdate","finish datetime","finish date time"],
+
+    // Accept MSP/Excel export variants
+    "start": [
+      "start","start date","start time","startdate","start datetime","start date time",
+      "scheduled start"
+    ],
+    "finish": [
+      "finish","finish date","finish time","finishdate","finish datetime","finish date time",
+      "scheduled finish"
+    ],
+
     "% complete": ["% complete","percent complete","percentcomplete","percent","pct complete","percent complete."],
     "resource names": ["resource names","resources","resource name","resourcename"],
-    "text30": ["text30","assigned department","department","dept","text 30","text-30","text_30"]
+
+    // Dept can be Text30 or an explicit column name
+    "text30": ["text30","assigned department","department","dept","text 30","text-30","text_30"],
+
+    // Optional direct parent summary name column
+    "task summary name": ["task summary name","summary task name","parent summary","parent task"]
   };
-  function detectDelimiter(firstLine){
+  function detectDelimiter(text){
+    const sample = (text.match(/^[^\r\n]*/)||[""])[0];
     const cands=[",",";","\t","|"];
-    const counts=cands.map(ch => (firstLine.match(new RegExp(`\\${ch}`,"g"))||[]).length);
+    const counts=cands.map(ch => {
+      let count=0, inQuotes=false;
+      for(let i=0;i<sample.length;i++){
+        const c=sample[i];
+        if(c==='"'){
+          if(inQuotes && sample[i+1]==='"'){ i++; }
+          inQuotes=!inQuotes;
+        }else if(c===ch && !inQuotes){
+          count++;
+        }
+      }
+      return count;
+    });
     let best=0; for(let i=1;i<counts.length;i++) if(counts[i]>counts[best]) best=i;
     return cands[best] || ",";
   }
   function parseCSV(text){
-    const lines = text.split(/\r?\n/).filter(l => l.trim().length);
-    if (!lines.length) throw new Error("Empty CSV");
-    const delim = detectDelimiter(lines[0]);
-    const headers = lines[0].split(delim).map(h=>h.replace(/^[\uFEFF\u200B]+/,""));
-    const rows    = lines.slice(1).map(l => l.split(delim));
-    return { headers, rows, delim };
+    if(!text || !text.trim()) throw new Error("Empty CSV");
+    const delim = detectDelimiter(text);
+    const rows=[];
+    let field="", row=[], inQuotes=false;
+    for(let i=0;i<text.length;i++){
+      const ch=text[i];
+      if(ch==='"'){
+        if(inQuotes && text[i+1]==='"'){
+          field+='"';
+          i++;
+        }else{
+          inQuotes=!inQuotes;
+        }
+      }else if(ch===delim && !inQuotes){
+        row.push(field);
+        field="";
+      }else if((ch==='\n' || ch==='\r') && !inQuotes){
+        if(ch==='\r' && text[i+1]==='\n') i++;
+        row.push(field);
+        rows.push(row);
+        row=[];
+        field="";
+      }else{
+        field+=ch;
+      }
+    }
+    if(field.length || row.length){
+      row.push(field);
+      rows.push(row);
+    }
+    if(!rows.length) throw new Error("Empty CSV");
+    const headers = rows.shift().map(h=>h.replace(/^[\uFEFF\u200B]+/,""));
+    const body = rows.filter(r => r.some(cell => (cell||"").trim().length));
+    return { headers, rows: body, delim };
   }
   function indexOfAlias(headers, canonical){
     const wants = (HEADER_ALIASES[canonical] || [canonical]).map(normHeader);
@@ -93,22 +204,32 @@ window.addEventListener("DOMContentLoaded", () => {
       if (canonical==="% complete" && (h==="percent complete"||h==="percent")) return i;
       if (canonical==="outline level" && (h==="outline lvl"||h==="outline")) return i;
     }
+    if (canonical === "text30"){
+      for (let i = 0; i < normalized.length; i++){
+        const h = normalized[i];
+        const compact = h.replace(/\s+/g, "");
+        if (compact.includes("text30")) return i;
+        if (/text\s*30/.test(h)) return i;
+        if (/(assigned\s*)?(dept|department)/.test(h) && !/(baseline|remaining|cost|resource)/.test(h)) return i;
+      }
+    }
     return -1;
   }
   function buildColumnMap(headers){
     const col = {
       uid : indexOfAlias(headers,"unique id"),
       name: indexOfAlias(headers,"name"),
-      summary:indexOfAlias(headers,"summary"),
+      summary:indexOfAlias(headers,"summary"), // may be -1 (missing)
       outlineLevel:indexOfAlias(headers,"outline level"),
       wbs:indexOfAlias(headers,"wbs"),
       start:indexOfAlias(headers,"start"),
       finish:indexOfAlias(headers,"finish"),
       pct:indexOfAlias(headers,"% complete"),
       res:indexOfAlias(headers,"resource names"),
-      text30:indexOfAlias(headers,"text30")
+      text30:indexOfAlias(headers,"text30"),
+      taskSummaryName:indexOfAlias(headers,"task summary name")
     };
-    const must=["uid","name","summary","outlineLevel","wbs","start","finish","pct"];
+    const must=["uid","name","outlineLevel","wbs","start","finish","pct"];
     const missing=must.filter(k=>col[k]===-1);
     if(missing.length){
       const seen = headers.map(h=>normHeader(h)).join(" | ");
@@ -200,13 +321,17 @@ window.addEventListener("DOMContentLoaded", () => {
         const parentWBS = t.wbs.split(".").slice(0,-1).join(".");
         parentSummaryName = byWBS.get(parentWBS)?.name || "";
       }
+      const plannedStartISO = t.start ? new Date(t.start).toISOString() : "";
+      const plannedFinishISO = t.finish ? new Date(t.finish).toISOString() : "";
       out.push({
         TaskUID: t.uid,
         TaskName: t.name,
         SummaryTaskName: parentSummaryName,
         Department: departmentFromXML(t.el),
-        PlannedStart: t.start ? new Date(t.start).toISOString() : "",
-        PlannedFinish: t.finish ? new Date(t.finish).toISOString() : "",
+        PlannedStart: plannedStartISO,
+        PlannedFinish: plannedFinishISO,
+        PlannedStartRaw: t.start || "",
+        PlannedFinishRaw: t.finish || "",
         PercentComplete: t.pct,
         State:"Idle",
         ActualStart:null, ActualFinish:null,
@@ -222,13 +347,19 @@ window.addEventListener("DOMContentLoaded", () => {
   importBtn?.addEventListener("click", ()=>fileInput?.click());
   fileInput?.addEventListener("change", async (e)=>{
     const file=e.target.files?.[0]; if(!file) return;
-    const text = await file.text();
+    const text = await readFileSmart(file);
     const isXML = /\.xml$/i.test(file.name) || /xml/.test(file.type);
     try{
       tasks = isXML ? parseMSPXML(text) : parseCSVToTasks(text);
       save();
       console.log(`[Tracker] imported ${tasks.length} task rows from ${isXML?'XML':'CSV'}`);
-      console.table(tasks.slice(0,5).map(t=>({ UID:t.TaskUID, Name:t.TaskName, Summary:t.SummaryTaskName, Start:t.PlannedStart, Dept:t.Department })));
+      console.table(tasks.slice(0,5).map(t=>({
+        UID:t.TaskUID,
+        Name:t.TaskName,
+        Summary:t.SummaryTaskName,
+        Start:t.PlannedStart || t.PlannedStartRaw,
+        Dept:t.Department
+      })));
     }catch(err){
       alert(err.message || "Import error");
       console.error(err);
@@ -242,29 +373,34 @@ window.addEventListener("DOMContentLoaded", () => {
     const parsed = parseCSV(text);
     const col = buildColumnMap(parsed.headers);
 
-    // First pass: map rows (keep summaries for WBS lookup)
-    const rows = parsed.rows.map(cells => ({
-      uid:(cells[col.uid]||"").trim(),
-      name:(cells[col.name]||"").trim(),
-      isSummary:/^(y|yes|true|1)$/i.test((cells[col.summary]||"").trim()),
-      level:parseInt((cells[col.outlineLevel]||"1"),10)||1,
-      wbs:(cells[col.wbs]||"").trim(),
-      start:(cells[col.start]||""),
-      finish:(cells[col.finish]||""),
-      pct:parseInt((cells[col.pct]||"0"),10)||0,
-      dept:(col.text30!==-1 ? (cells[col.text30]||"").trim() : "")
-    }));
-    const byWBS = new Map(rows.map(r=>[r.wbs,r]));
+    const rows = parsed.rows.map(cells => {
+      const rawSummary = col.summary !== -1 ? (cells[col.summary]||"").trim() : "";
+      const isSummary = col.summary === -1 ? false : /^(y|yes|true|1)$/i.test(rawSummary);
 
-    // Emit only working tasks
+      return {
+        uid:(cells[col.uid]||"").trim(),
+        name:(cells[col.name]||"").trim(),
+        isSummary,
+        wbs:(cells[col.wbs]||"").trim(),
+        start:(cells[col.start]||"").trim(),
+        finish:(cells[col.finish]||"").trim(),
+        pct:parseInt((cells[col.pct]||"0"),10)||0,
+        dept:(col.text30!==-1 ? (cells[col.text30]||"").trim() : ""),
+        directParent:(col.taskSummaryName!==-1 ? (cells[col.taskSummaryName]||"").trim() : "")
+      };
+    });
+
+    const byWBS = new Map(rows.map(r=>[r.wbs,r]));
     const out=[];
     for(const r of rows){
       if (r.isSummary) continue;
-      let parentSummaryName="";
-      if (r.wbs && r.wbs.includes(".")){
+
+      let parentSummaryName = r.directParent || "";
+      if (!parentSummaryName && r.wbs && r.wbs.includes(".")){
         const parentWBS = r.wbs.split(".").slice(0,-1).join(".");
         parentSummaryName = byWBS.get(parentWBS)?.name || "";
       }
+
       out.push({
         TaskUID:r.uid,
         TaskName:r.name,
@@ -272,6 +408,8 @@ window.addEventListener("DOMContentLoaded", () => {
         Department:r.dept,
         PlannedStart: parseDateFlexible(r.start),
         PlannedFinish: parseDateFlexible(r.finish),
+        PlannedStartRaw: r.start,
+        PlannedFinishRaw: r.finish,
         PercentComplete: r.pct,
         State:"Idle",
         ActualStart:null, ActualFinish:null,
@@ -343,6 +481,21 @@ window.addEventListener("DOMContentLoaded", () => {
   window.pauseTask = pauseTask;
   window.finishTask = finishTask;
 
+  tbody?.addEventListener("click", (event) => {
+    const btn = event.target.closest("button[data-action]");
+    if (!btn || !tbody.contains(btn)) return;
+    const uid = btn.dataset.uid;
+    if (!uid) return;
+    const action = btn.dataset.action;
+    if (action === "start") {
+      startTask(uid);
+    } else if (action === "pause") {
+      pauseTask(uid);
+    } else if (action === "finish") {
+      finishTask(uid);
+    }
+  });
+
   confirmPause?.addEventListener("click",(e)=>{
     e.preventDefault();
     if(!pauseReason.value) return;
@@ -362,7 +515,7 @@ window.addEventListener("DOMContentLoaded", () => {
         TaskName: t.TaskName,
         SummaryTaskName: t.SummaryTaskName || "",
         Department: t.Department || "",
-        PlannedStart: t.PlannedStart || "",
+        PlannedStart: t.PlannedStart || t.PlannedStartRaw || "",
         ActualStart: t.ActualStart || "",
         Reason: pauseReason.value,
         Notes: pauseNotes.value || ""
@@ -383,19 +536,46 @@ window.addEventListener("DOMContentLoaded", () => {
     const end=new Date(start.getTime()+3*24*3600*1000-1);
     return {start,end};
   }
-  function overlaps(ps,pf,win){ return ps<=win.end.getTime() && pf>=win.start.getTime(); }
-  function fmt(ts){ if(!ts) return ""; const d=new Date(ts); return isNaN(d)?"":d.toLocaleString(); }
+  function parseMillisFlexible(value){
+    if (!value) return NaN;
+    const d = new Date(value);
+    if (!isNaN(d)) return d.getTime();
+    const parsed = Date.parse(value);
+    return isNaN(parsed) ? NaN : parsed;
+  }
+  function fmt(ts, fallback=""){ 
+    if (ts){
+      const d=new Date(ts);
+      if(!isNaN(d)) return d.toLocaleString();
+    }
+    if (fallback){
+      const d = new Date(fallback);
+      if(!isNaN(d)) return d.toLocaleString();
+      return fallback;
+    }
+    return "";
+  }
 
   function render(){
+    if (!tbody) return;
     const {start,end}=windowRange3d();
+    const winStart = start.getTime();
+    const winEnd = end.getTime();
     const filtered = tasks
       .filter(t => {
-        const ps = new Date(t.PlannedStart || 0).getTime();
-        const pf = new Date(t.PlannedFinish || 0).getTime();
-        if (!ps || !pf) return true; // still show tasks if no dates parsed
-        return overlaps(ps,pf,{start,end});
+        const ps = parseMillisFlexible(t.PlannedStart || t.PlannedStartRaw);
+        const pf = parseMillisFlexible(t.PlannedFinish || t.PlannedFinishRaw);
+        if (isNaN(ps) || isNaN(pf)) return true; // still show tasks if no dates parsed
+        return ps <= winEnd && pf >= winStart;
       })
-      .sort((a,b)=> new Date(a.PlannedStart||0) - new Date(b.PlannedStart||0));
+      .sort((a,b)=>{
+        const aTime = parseMillisFlexible(a.PlannedStart || a.PlannedStartRaw);
+        const bTime = parseMillisFlexible(b.PlannedStart || b.PlannedStartRaw);
+        if (isNaN(aTime) && isNaN(bTime)) return 0;
+        if (isNaN(aTime)) return 1;
+        if (isNaN(bTime)) return -1;
+        return aTime - bTime;
+      });
 
     tbody.innerHTML="";
     filtered.forEach(t=>{
@@ -404,23 +584,47 @@ window.addEventListener("DOMContentLoaded", () => {
       tr.innerHTML = `
         <td>${t.TaskName || ""} ${stateBadge}</td>
         <td>${t.SummaryTaskName||""}</td>
-        <td>${fmt(t.PlannedStart)}</td>
+        <td>${fmt(t.PlannedStart, t.PlannedStartRaw)}</td>
         <td>${fmt(t.ActualStart)}</td>
         <td>${t.Department||""}</td>
-        <td class="actions">
-          <div class="btnrow">
-            <button class="primary" ${t.State==="Active"?"disabled":""} onclick="startTask('${t.TaskUID}')">${t.State==="Paused"?"Resume":"Start"}</button>
-            <button ${t.State==="Active"?"":"disabled"} onclick="pauseTask('${t.TaskUID}')">Pause</button>
-            <button class="success" ${t.State==="Active"||t.State==="Paused"?"":"disabled"} onclick="finishTask('${t.TaskUID}')">Finish</button>
-          </div>
-        </td>
+        <td class="actions"></td>
       `;
+      const actionsCell = tr.querySelector(".actions");
+      const btnRow=document.createElement("div");
+      btnRow.className="btnrow";
+
+      const startBtn=document.createElement("button");
+      startBtn.className="primary";
+      startBtn.dataset.action="start";
+      startBtn.dataset.uid=t.TaskUID;
+      startBtn.textContent = t.State==="Paused"?"Resume":"Start";
+      startBtn.disabled = t.State==="Active";
+      btnRow.appendChild(startBtn);
+
+      const pauseBtn=document.createElement("button");
+      pauseBtn.dataset.action="pause";
+      pauseBtn.dataset.uid=t.TaskUID;
+      pauseBtn.textContent="Pause";
+      pauseBtn.disabled = t.State!=="Active";
+      btnRow.appendChild(pauseBtn);
+
+      const finishBtn=document.createElement("button");
+      finishBtn.className="success";
+      finishBtn.dataset.action="finish";
+      finishBtn.dataset.uid=t.TaskUID;
+      finishBtn.textContent="Finish";
+      finishBtn.disabled = !(t.State==="Active"||t.State==="Paused");
+      btnRow.appendChild(finishBtn);
+
+      actionsCell.appendChild(btnRow);
       tbody.appendChild(tr);
     });
 
     const notice = document.getElementById("notice");
-    notice.textContent = tasks.length
-      ? "Showing a 3-day forecast (today → +2 days)."
-      : "Import a Microsoft Project CSV or XML to begin. Showing a 3-day forecast (today → +2 days).";
+    if (notice){
+      notice.textContent = tasks.length
+        ? "Showing a 3-day forecast (today → +2 days)."
+        : "Import a Microsoft Project CSV or XML to begin. Showing a 3-day forecast (today → +2 days).";
+    }
   }
 });
