@@ -1,7 +1,7 @@
-// Live Project Tracker — robust CSV + MSP XML import
-// View columns: Task Name | Task Summary Name | Scheduled Start | Actual Start | Assigned Department
+// Live Project Tracker — robust CSV + MSP XML import, Text30-only department, Actions restored
+// View: Task Name | Task Summary Name | Scheduled Start | Actual Start | Assigned Department | Actions
 window.addEventListener("DOMContentLoaded", () => {
-  console.log("%c[Tracker] app.js (robust CSV + XML, no Actions column)", "color:#6aa3ff");
+  console.log("%c[Tracker] app.js (actions ON, Text30-only dept)", "color:#6aa3ff");
 
   // ---- DOM ----
   const importBtn = document.getElementById("importBtn");
@@ -9,7 +9,7 @@ window.addEventListener("DOMContentLoaded", () => {
   const exportBtn  = document.getElementById("exportBtn");
   const tbody      = document.querySelector("#taskTable tbody");
 
-  // Pause dialog (kept for future; not used when Actions hidden)
+  // Pause dialog
   const pauseDialog   = document.getElementById("pauseDialog");
   const pauseReason   = document.getElementById("pauseReason");
   const pauseNotes    = document.getElementById("pauseNotes");
@@ -18,6 +18,7 @@ window.addEventListener("DOMContentLoaded", () => {
 
   // ---- State ----
   let tasks = [];
+  let pauseUID = null;
 
   // ---- Delay log (localStorage) ----
   const DELAY_LOG_KEY = "DELAY_LOG_V1";
@@ -58,14 +59,14 @@ window.addEventListener("DOMContentLoaded", () => {
     "% complete": ["% complete","percent complete","percentcomplete","percent","pct complete"],
     "resource names": ["resource names","resources","resource name","resourcename"],
     "text5": ["text5","department","dept"],
-    "text30": ["text30","department","dept"]
+    "text30": ["text30","assigned department","department","dept"]
   };
 
   function detectDelimiter(firstLine){
-    const candidates = [",",";","\t","|"];
-    const counts = candidates.map(ch => (firstLine.match(new RegExp(`\\${ch}`,"g"))||[]).length);
-    let bestIdx = 0; for (let i=1;i<counts.length;i++) if (counts[i]>counts[bestIdx]) bestIdx=i;
-    return candidates[bestIdx] || ",";
+    const cands=[",",";","\t","|"];
+    const counts=cands.map(ch => (firstLine.match(new RegExp(`\\${ch}`,"g"))||[]).length);
+    let best=0; for(let i=1;i<counts.length;i++) if(counts[i]>counts[best]) best=i;
+    return cands[best] || ",";
   }
 
   function parseCSV(text){
@@ -83,7 +84,7 @@ window.addEventListener("DOMContentLoaded", () => {
     for (let i=0;i<normalized.length;i++){
       if (wants.includes(normalized[i])) return i;
     }
-    // some flexible fallbacks:
+    // tolerant fallbacks
     for (let i=0;i<normalized.length;i++){
       const h = normalized[i];
       if (canonical==="start"  && (h==="start date"||h==="start time")) return i;
@@ -117,38 +118,25 @@ window.addEventListener("DOMContentLoaded", () => {
     return col;
   }
 
-  function pickDepartmentFromCSV(cells, col){
-    const t30 = col.text30!==-1 ? (cells[col.text30]||"").trim() : "";
-    const t5  = col.text5  !==-1 ? (cells[col.text5 ]||"").trim() : "";
-    if(t30) return t30;
-    if(t5)  return t5;
-    const res = col.res!==-1 ? (cells[col.res]||"").split(",")[0].trim() : "";
-    return res || "";
-  }
-
-  // ======= Flexible date parser for MSP exports (CSV) =======
+  // ======= Date parsing for MSP CSV =======
   function parseDateFlexible(s){
     if (!s) return "";
     s = String(s).trim();
-    // First try native
     const d0 = new Date(s);
     if (!isNaN(d0)) return d0.toISOString();
 
-    // Try split forms: dd/MM/yyyy HH:mm or MM/dd/yyyy HH:mm (24h or 12h)
+    // dd/MM/yyyy HH:mm or MM/dd/yyyy HH:mm
     const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
     if (m){
       let d = parseInt(m[1],10), M = parseInt(m[2],10), y = parseInt(m[3],10);
       const hh = parseInt(m[4]||"0",10), mm = parseInt(m[5]||"0",10), ss = parseInt(m[6]||"0",10);
-      // If first number > 12, treat as day-first; else assume day-first by default (common in AU)
-      const dayFirst = (d>12) || true;
+      const dayFirst = true; // AU default
       const day = dayFirst ? d : M;
       const mon = dayFirst ? M-1 : d-1;
       if (y < 100) y += 2000;
       const dt = new Date(y, mon, day, hh, mm, ss);
       if (!isNaN(dt)) return dt.toISOString();
     }
-
-    // If all else fails, return empty so we still display the row
     return "";
   }
 
@@ -170,7 +158,8 @@ window.addEventListener("DOMContentLoaded", () => {
     const projectEls = ql(doc, "Project");
     if (!projectEls.length) throw new Error("Not a valid Microsoft Project XML (MSPDI).");
 
-    const defMap = new Map(); // FieldID -> Alias
+    // ExtendedAttribute definitions: FieldID -> Alias
+    const defMap = new Map();
     ql(doc, "ExtendedAttributes").forEach(node=>{
       ql(node,"ExtendedAttribute").forEach(def=>{
         const id = firstText(def, "FieldID");
@@ -179,22 +168,22 @@ window.addEventListener("DOMContentLoaded", () => {
       });
     });
 
-    function pickDepartmentFromXML(taskEl){
-      let candidate = "";
+    // Text30-only department helper
+    function departmentFromXML(taskEl){
+      let result = "";
       ql(taskEl,"ExtendedAttribute").forEach(a=>{
         const id = firstText(a,"FieldID");
         const val= firstText(a,"Value");
+        // Text30 heuristic: FieldID 188743734 is common for Text30 in MSP.
+        if (!result && id === "188743734" && val) result = val;
+        // Also accept Alias that equals "Assigned Department" (exact case-insensitive)
         const alias = id ? (defMap.get(id)||"") : "";
-        if (!candidate && alias && /department/i.test(alias) && val) candidate = val;
-        if (!candidate && id === "188743734" && val) candidate = val; // common Text30 FieldID
+        if (!result && alias && /^assigned department$/i.test(alias) && val) result = val;
       });
-      if (candidate) return candidate;
-      const rn = firstText(taskEl,"ResourceNames");
-      if (rn) return rn.split(",")[0].trim();
-      return "";
+      return result; // no fallback to Resource Names
     }
 
-    // Maintain a stack of **summary task names only** at each outline level
+    // Maintain a stack of summary task names at each outline level
     const summaryStack = [];
     const out = [];
 
@@ -208,9 +197,8 @@ window.addEventListener("DOMContentLoaded", () => {
         const finish= firstText(taskEl,"Finish");
         const pct   = parseInt(firstText(taskEl,"PercentComplete") || "0", 10) || 0;
 
-        // If it's a summary task, update stack and skip rendering row
         if (summaryFlag){
-          summaryStack[olvl] = name;               // remember this summary's name
+          summaryStack[olvl] = name;
           summaryStack.length = Math.max(summaryStack.length, olvl+1);
           return;
         }
@@ -221,7 +209,7 @@ window.addEventListener("DOMContentLoaded", () => {
           TaskUID: uid,
           TaskName: name,
           SummaryTaskName: parentSummaryName,
-          Department: pickDepartmentFromXML(taskEl),
+          Department: departmentFromXML(taskEl),
           PlannedStart: start ? new Date(start).toISOString() : "",
           PlannedFinish: finish ? new Date(finish).toISOString() : "",
           PercentComplete: pct,
@@ -259,7 +247,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const parsed = parseCSV(text);
     const col = buildColumnMap(parsed.headers);
 
-    // Maintain a stack of **summary task names only** at each outline level
+    // summaryStack holds ONLY summary task names per level
     const summaryStack = [];
     const out = [];
 
@@ -270,18 +258,21 @@ window.addEventListener("DOMContentLoaded", () => {
       const name  = (cells[col.name]||"").trim();
 
       if (isSummary){
-        summaryStack[level] = name;                   // record this parent summary
+        summaryStack[level] = name;
         summaryStack.length = Math.max(summaryStack.length, level+1);
-        continue;                                     // do not render summary rows
+        continue;
       }
 
       const parentSummaryName = level>1 ? (summaryStack[level-1] || "") : "";
+
+      // Text30-only department (no fallback)
+      const dept = col.text30 !== -1 ? (cells[col.text30] || "").trim() : "";
 
       out.push({
         TaskUID:(cells[col.uid]||"").trim(),
         TaskName:name,
         SummaryTaskName: parentSummaryName,
-        Department:pickDepartmentFromCSV(cells,col),
+        Department: dept,
         PlannedStart: parseDateFlexible(cells[col.start]),
         PlannedFinish: parseDateFlexible(cells[col.finish]),
         PercentComplete: parseInt((cells[col.pct]||"0"),10)||0,
@@ -306,6 +297,76 @@ window.addEventListener("DOMContentLoaded", () => {
     const csv = ["TaskUID,ShiftDate,ActualStart,ActualFinish,TotalActiveMinutes,TotalPausedMinutes", ...rows].join("\n");
     const blob=new Blob([csv],{type:"text/csv"});
     const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`shift_actuals_${shiftDate}.csv`; a.click();
+  });
+
+  // ========= Actions / FSM =========
+  function startTask(uid){
+    const t = tasks.find(x=>x.TaskUID===uid); if(!t) return;
+    const now = new Date().toISOString();
+    if(t.State==="Idle"){
+      t.ActualStart=now; t.State="Active"; t.lastStart=now; (t.Audit ||= []).push({type:"Start",time:now});
+    }else if(t.State==="Paused"){
+      t.State="Active";
+      if(t.lastPause){
+        const paused = new Date(now) - new Date(t.lastPause);
+        t.TotalPausedMinutes = (t.TotalPausedMinutes||0) + (paused>0 ? Math.round(paused/60000) : 0);
+      }
+      t.lastStart=now; (t.Audit ||= []).push({type:"Resume",time:now});
+    }
+    render();
+  }
+  function pauseTask(uid){
+    const t = tasks.find(x=>x.TaskUID===uid); if(!t || t.State!=="Active") return;
+    pauseUID = uid;
+    pauseTaskName.textContent = t.TaskName;
+    pauseReason.value = ""; pauseNotes.value = "";
+    pauseDialog.showModal();
+  }
+  function finishTask(uid){
+    const t = tasks.find(x=>x.TaskUID===uid); if(!t) return;
+    const now = new Date().toISOString();
+    if(t.State==="Active" && t.lastStart){
+      const active = new Date(now) - new Date(t.lastStart);
+      t.TotalActiveMinutes = (t.TotalActiveMinutes||0) + (active>0 ? Math.round(active/60000) : 0);
+    }
+    if(t.State==="Paused" && t.lastPause){
+      const paused = new Date(now) - new Date(t.lastPause);
+      t.TotalPausedMinutes = (t.TotalPausedMinutes||0) + (paused>0 ? Math.round(paused/60000) : 0);
+    }
+    t.State="Finished"; t.ActualFinish=now; t.lastStart=null; t.lastPause=null;
+    (t.Audit ||= []).push({type:"Finish",time:now});
+    render();
+  }
+  window.startTask = startTask;
+  window.pauseTask = pauseTask;
+  window.finishTask = finishTask;
+
+  confirmPause.addEventListener("click",(e)=>{
+    e.preventDefault();
+    if(!pauseReason.value) return;
+    const t = tasks.find(x=>x.TaskUID===pauseUID); if(!t) return;
+    const now = new Date().toISOString();
+    if(t.State==="Active" && t.lastStart){
+      const active = new Date(now) - new Date(t.lastStart);
+      t.TotalActiveMinutes = (t.TotalActiveMinutes||0) + (active>0 ? Math.round(active/60000) : 0);
+    }
+    t.State="Paused"; t.lastStart=null; t.lastPause=now;
+    (t.Audit ||= []).push({type:"Pause",time:now,reason:pauseReason.value,notes:pauseNotes.value||""});
+
+    // Save to Delay Log
+    appendDelayLog({
+      LoggedAt: now,
+      TaskUID: t.TaskUID,
+      TaskName: t.TaskName,
+      SummaryTaskName: t.SummaryTaskName || "",
+      Department: t.Department || "",
+      PlannedStart: t.PlannedStart || "",
+      ActualStart: t.ActualStart || "",
+      Reason: pauseReason.value,
+      Notes: pauseNotes.value || ""
+    });
+
+    pauseDialog.close(); render();
   });
 
   // ========= Render (3-day window) =========
@@ -339,6 +400,11 @@ window.addEventListener("DOMContentLoaded", () => {
         <td>${fmt(t.PlannedStart)}</td>
         <td>${fmt(t.ActualStart)}</td>
         <td>${t.Department||""}</td>
+        <td class="actions">
+          <button class="primary" ${t.State==="Active"?"disabled":""} onclick="startTask('${t.TaskUID}')">${t.State==="Paused"?"Resume":"Start"}</button>
+          <button ${t.State==="Active"?"":"disabled"} onclick="pauseTask('${t.TaskUID}')">Pause</button>
+          <button class="success" ${t.State==="Active"||t.State==="Paused"?"":"disabled"} onclick="finishTask('${t.TaskUID}')">Finish</button>
+        </td>
       `;
       tbody.appendChild(tr);
     });
