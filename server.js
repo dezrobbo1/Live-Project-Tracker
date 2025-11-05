@@ -5,12 +5,12 @@ import { fileURLToPath } from "url";
 
 const app = express();
 
-// __dirname replacement for ESM
+// __dirname for ESM
 const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const __dirname  = path.dirname(__filename);
 const PUBLIC_DIR = path.join(__dirname, "public");
 
-// Low-cache during development so new JS/CSS always load
+// Keep iteration snappy: prevent stale cache for html/js/css
 app.disable("etag");
 app.use((req, res, next) => {
   if (/\.(js|css|html)$/.test(req.url)) {
@@ -21,11 +21,11 @@ app.use((req, res, next) => {
   next();
 });
 
-// Serve /public as web root
+// Serve static files from /public as the site root
 app.use(express.static(PUBLIC_DIR, { extensions: ["html"] }));
 
-// Fallback to index.html (helps simple multi-page links)
-app.get("*", (req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
+// Fallback to index.html
+app.get("*", (_req, res) => res.sendFile(path.join(PUBLIC_DIR, "index.html")));
 
 const port = process.env.PORT || 3000;
 app.listen(port, () => console.log(`Live Project Tracker running on :${port}`));
