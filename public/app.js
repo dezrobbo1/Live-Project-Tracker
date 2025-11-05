@@ -24,6 +24,13 @@ window.addEventListener("DOMContentLoaded", () => {
   let tasks = [];
   let pauseUID = null;
 
+  function upgradeTask(task){
+    if (!task || typeof task !== "object") return task;
+    if (!("PlannedStartRaw" in task)) task.PlannedStartRaw = task.PlannedStart || "";
+    if (!("PlannedFinishRaw" in task)) task.PlannedFinishRaw = task.PlannedFinish || "";
+    return task;
+  }
+
   const save = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify(tasks)); } catch {} };
   const load = () => {
     try { const raw = localStorage.getItem(STORE_KEY); const arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr : []; }
@@ -31,7 +38,7 @@ window.addEventListener("DOMContentLoaded", () => {
   };
 
   // Initial restore (so returning from delay.html keeps your project)
-  tasks = load();
+  tasks = load().map(upgradeTask);
   render();
 
   // Delay log helpers
@@ -66,21 +73,62 @@ window.addEventListener("DOMContentLoaded", () => {
     "finish": ["finish","finish date","finish time","finishdate","finish datetime","finish date time"],
     "% complete": ["% complete","percent complete","percentcomplete","percent","pct complete","percent complete."],
     "resource names": ["resource names","resources","resource name","resourcename"],
-    "text30": ["text30","assigned department","department","dept","text 30","text-30","text_30"]
+    "text30": ["text30","assigned department","department","dept","text 30","text-30","text_30","text30 text","text30 department","text30 assigned department"]
   };
-  function detectDelimiter(firstLine){
+  function detectDelimiter(text){
+    const sample = (text.match(/^[^\r\n]*/)||[""])[0];
     const cands=[",",";","\t","|"];
-    const counts=cands.map(ch => (firstLine.match(new RegExp(`\\${ch}`,"g"))||[]).length);
+    const counts=cands.map(ch => {
+      let count=0, inQuotes=false;
+      for(let i=0;i<sample.length;i++){
+        const c=sample[i];
+        if(c==='"'){
+          if(inQuotes && sample[i+1]==='"'){ i++; }
+          inQuotes=!inQuotes;
+        }else if(c===ch && !inQuotes){
+          count++;
+        }
+      }
+      return count;
+    });
     let best=0; for(let i=1;i<counts.length;i++) if(counts[i]>counts[best]) best=i;
     return cands[best] || ",";
   }
   function parseCSV(text){
-    const lines = text.split(/\r?\n/).filter(l => l.trim().length);
-    if (!lines.length) throw new Error("Empty CSV");
-    const delim = detectDelimiter(lines[0]);
-    const headers = lines[0].split(delim).map(h=>h.replace(/^[\uFEFF\u200B]+/,""));
-    const rows    = lines.slice(1).map(l => l.split(delim));
-    return { headers, rows, delim };
+    if(!text || !text.trim()) throw new Error("Empty CSV");
+    const delim = detectDelimiter(text);
+    const rows=[];
+    let field="", row=[], inQuotes=false;
+    for(let i=0;i<text.length;i++){
+      const ch=text[i];
+      if(ch==='"'){
+        if(inQuotes && text[i+1]==='"'){
+          field+='"';
+          i++;
+        }else{
+          inQuotes=!inQuotes;
+        }
+      }else if(ch===delim && !inQuotes){
+        row.push(field);
+        field="";
+      }else if((ch==='\n' || ch==='\r') && !inQuotes){
+        if(ch==='\r' && text[i+1]==='\n') i++;
+        row.push(field);
+        rows.push(row);
+        row=[];
+        field="";
+      }else{
+        field+=ch;
+      }
+    }
+    if(field.length || row.length){
+      row.push(field);
+      rows.push(row);
+    }
+    if(!rows.length) throw new Error("Empty CSV");
+    const headers = rows.shift().map(h=>h.replace(/^[\uFEFF\u200B]+/,""));
+    const body = rows.filter(r => r.some(cell => (cell||"").trim().length));
+    return { headers, rows: body, delim };
   }
   function indexOfAlias(headers, canonical){
     const wants = (HEADER_ALIASES[canonical] || [canonical]).map(normHeader);
@@ -92,6 +140,10 @@ window.addEventListener("DOMContentLoaded", () => {
       if (canonical==="finish" && (h==="finish date"||h==="finish time")) return i;
       if (canonical==="% complete" && (h==="percent complete"||h==="percent")) return i;
       if (canonical==="outline level" && (h==="outline lvl"||h==="outline")) return i;
+    }
+    if (canonical === "text30"){
+      const idx = normalized.findIndex(h => h.includes("text30"));
+      if (idx !== -1) return idx;
     }
     return -1;
   }
@@ -200,13 +252,17 @@ window.addEventListener("DOMContentLoaded", () => {
         const parentWBS = t.wbs.split(".").slice(0,-1).join(".");
         parentSummaryName = byWBS.get(parentWBS)?.name || "";
       }
+      const plannedStartISO = t.start ? new Date(t.start).toISOString() : "";
+      const plannedFinishISO = t.finish ? new Date(t.finish).toISOString() : "";
       out.push({
         TaskUID: t.uid,
         TaskName: t.name,
         SummaryTaskName: parentSummaryName,
         Department: departmentFromXML(t.el),
-        PlannedStart: t.start ? new Date(t.start).toISOString() : "",
-        PlannedFinish: t.finish ? new Date(t.finish).toISOString() : "",
+        PlannedStart: plannedStartISO,
+        PlannedFinish: plannedFinishISO,
+        PlannedStartRaw: t.start || "",
+        PlannedFinishRaw: t.finish || "",
         PercentComplete: t.pct,
         State:"Idle",
         ActualStart:null, ActualFinish:null,
@@ -228,7 +284,13 @@ window.addEventListener("DOMContentLoaded", () => {
       tasks = isXML ? parseMSPXML(text) : parseCSVToTasks(text);
       save();
       console.log(`[Tracker] imported ${tasks.length} task rows from ${isXML?'XML':'CSV'}`);
-      console.table(tasks.slice(0,5).map(t=>({ UID:t.TaskUID, Name:t.TaskName, Summary:t.SummaryTaskName, Start:t.PlannedStart, Dept:t.Department })));
+      console.table(tasks.slice(0,5).map(t=>({
+        UID:t.TaskUID,
+        Name:t.TaskName,
+        Summary:t.SummaryTaskName,
+        Start:t.PlannedStart || t.PlannedStartRaw,
+        Dept:t.Department
+      })));
     }catch(err){
       alert(err.message || "Import error");
       console.error(err);
@@ -249,29 +311,41 @@ window.addEventListener("DOMContentLoaded", () => {
       isSummary:/^(y|yes|true|1)$/i.test((cells[col.summary]||"").trim()),
       level:parseInt((cells[col.outlineLevel]||"1"),10)||1,
       wbs:(cells[col.wbs]||"").trim(),
-      start:(cells[col.start]||""),
-      finish:(cells[col.finish]||""),
+      start:(cells[col.start]||"").trim(),
+      finish:(cells[col.finish]||"").trim(),
       pct:parseInt((cells[col.pct]||"0"),10)||0,
       dept:(col.text30!==-1 ? (cells[col.text30]||"").trim() : "")
     }));
     const byWBS = new Map(rows.map(r=>[r.wbs,r]));
+    const summaryWBS = new Set();
+    rows.forEach(r => {
+      if (!r.wbs) return;
+      const parts = r.wbs.split(".");
+      for (let i = parts.length - 1; i > 0; i--){
+        summaryWBS.add(parts.slice(0, i).join("."));
+      }
+    });
 
     // Emit only working tasks
     const out=[];
     for(const r of rows){
-      if (r.isSummary) continue;
+      if (r.isSummary || summaryWBS.has(r.wbs)) continue;
       let parentSummaryName="";
       if (r.wbs && r.wbs.includes(".")){
         const parentWBS = r.wbs.split(".").slice(0,-1).join(".");
         parentSummaryName = byWBS.get(parentWBS)?.name || "";
       }
+      const plannedStartISO = parseDateFlexible(r.start);
+      const plannedFinishISO = parseDateFlexible(r.finish);
       out.push({
         TaskUID:r.uid,
         TaskName:r.name,
         SummaryTaskName: parentSummaryName,
         Department:r.dept,
-        PlannedStart: parseDateFlexible(r.start),
-        PlannedFinish: parseDateFlexible(r.finish),
+        PlannedStart: plannedStartISO,
+        PlannedFinish: plannedFinishISO,
+        PlannedStartRaw: r.start,
+        PlannedFinishRaw: r.finish,
         PercentComplete: r.pct,
         State:"Idle",
         ActualStart:null, ActualFinish:null,
@@ -343,6 +417,21 @@ window.addEventListener("DOMContentLoaded", () => {
   window.pauseTask = pauseTask;
   window.finishTask = finishTask;
 
+  tbody?.addEventListener("click", (event) => {
+    const btn = event.target.closest("button[data-action]");
+    if (!btn || !tbody.contains(btn)) return;
+    const uid = btn.dataset.uid;
+    if (!uid) return;
+    const action = btn.dataset.action;
+    if (action === "start") {
+      startTask(uid);
+    } else if (action === "pause") {
+      pauseTask(uid);
+    } else if (action === "finish") {
+      finishTask(uid);
+    }
+  });
+
   confirmPause?.addEventListener("click",(e)=>{
     e.preventDefault();
     if(!pauseReason.value) return;
@@ -362,7 +451,7 @@ window.addEventListener("DOMContentLoaded", () => {
         TaskName: t.TaskName,
         SummaryTaskName: t.SummaryTaskName || "",
         Department: t.Department || "",
-        PlannedStart: t.PlannedStart || "",
+        PlannedStart: t.PlannedStart || t.PlannedStartRaw || "",
         ActualStart: t.ActualStart || "",
         Reason: pauseReason.value,
         Notes: pauseNotes.value || ""
@@ -383,19 +472,45 @@ window.addEventListener("DOMContentLoaded", () => {
     const end=new Date(start.getTime()+3*24*3600*1000-1);
     return {start,end};
   }
-  function overlaps(ps,pf,win){ return ps<=win.end.getTime() && pf>=win.start.getTime(); }
-  function fmt(ts){ if(!ts) return ""; const d=new Date(ts); return isNaN(d)?"":d.toLocaleString(); }
+  function parseMillisFlexible(value){
+    if (!value) return NaN;
+    const d = new Date(value);
+    if (!isNaN(d)) return d.getTime();
+    const parsed = Date.parse(value);
+    return isNaN(parsed) ? NaN : parsed;
+  }
+  function fmt(ts, fallback=""){ 
+    if (ts){
+      const d=new Date(ts);
+      if(!isNaN(d)) return d.toLocaleString();
+    }
+    if (fallback){
+      const d = new Date(fallback);
+      if(!isNaN(d)) return d.toLocaleString();
+      return fallback;
+    }
+    return "";
+  }
 
   function render(){
     const {start,end}=windowRange3d();
+    const winStart = start.getTime();
+    const winEnd = end.getTime();
     const filtered = tasks
       .filter(t => {
-        const ps = new Date(t.PlannedStart || 0).getTime();
-        const pf = new Date(t.PlannedFinish || 0).getTime();
-        if (!ps || !pf) return true; // still show tasks if no dates parsed
-        return overlaps(ps,pf,{start,end});
+        const ps = parseMillisFlexible(t.PlannedStart || t.PlannedStartRaw);
+        const pf = parseMillisFlexible(t.PlannedFinish || t.PlannedFinishRaw);
+        if (isNaN(ps) || isNaN(pf)) return true; // still show tasks if no dates parsed
+        return ps <= winEnd && pf >= winStart;
       })
-      .sort((a,b)=> new Date(a.PlannedStart||0) - new Date(b.PlannedStart||0));
+      .sort((a,b)=>{
+        const aTime = parseMillisFlexible(a.PlannedStart || a.PlannedStartRaw);
+        const bTime = parseMillisFlexible(b.PlannedStart || b.PlannedStartRaw);
+        if (isNaN(aTime) && isNaN(bTime)) return 0;
+        if (isNaN(aTime)) return 1;
+        if (isNaN(bTime)) return -1;
+        return aTime - bTime;
+      });
 
     tbody.innerHTML="";
     filtered.forEach(t=>{
@@ -404,17 +519,39 @@ window.addEventListener("DOMContentLoaded", () => {
       tr.innerHTML = `
         <td>${t.TaskName || ""} ${stateBadge}</td>
         <td>${t.SummaryTaskName||""}</td>
-        <td>${fmt(t.PlannedStart)}</td>
+        <td>${fmt(t.PlannedStart, t.PlannedStartRaw)}</td>
         <td>${fmt(t.ActualStart)}</td>
         <td>${t.Department||""}</td>
-        <td class="actions">
-          <div class="btnrow">
-            <button class="primary" ${t.State==="Active"?"disabled":""} onclick="startTask('${t.TaskUID}')">${t.State==="Paused"?"Resume":"Start"}</button>
-            <button ${t.State==="Active"?"":"disabled"} onclick="pauseTask('${t.TaskUID}')">Pause</button>
-            <button class="success" ${t.State==="Active"||t.State==="Paused"?"":"disabled"} onclick="finishTask('${t.TaskUID}')">Finish</button>
-          </div>
-        </td>
+        <td class="actions"></td>
       `;
+      const actionsCell = tr.querySelector(".actions");
+      const btnRow=document.createElement("div");
+      btnRow.className="btnrow";
+
+      const startBtn=document.createElement("button");
+      startBtn.className="primary";
+      startBtn.dataset.action="start";
+      startBtn.dataset.uid=t.TaskUID;
+      startBtn.textContent = t.State==="Paused"?"Resume":"Start";
+      startBtn.disabled = t.State==="Active";
+      btnRow.appendChild(startBtn);
+
+      const pauseBtn=document.createElement("button");
+      pauseBtn.dataset.action="pause";
+      pauseBtn.dataset.uid=t.TaskUID;
+      pauseBtn.textContent="Pause";
+      pauseBtn.disabled = t.State!=="Active";
+      btnRow.appendChild(pauseBtn);
+
+      const finishBtn=document.createElement("button");
+      finishBtn.className="success";
+      finishBtn.dataset.action="finish";
+      finishBtn.dataset.uid=t.TaskUID;
+      finishBtn.textContent="Finish";
+      finishBtn.disabled = !(t.State==="Active"||t.State==="Paused");
+      btnRow.appendChild(finishBtn);
+
+      actionsCell.appendChild(btnRow);
       tbody.appendChild(tr);
     });
 
