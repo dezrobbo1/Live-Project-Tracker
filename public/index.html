@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Live Project Tracker (Starter)</title>
+  <link rel="stylesheet" href="./styles.css">
+</head>
+<body>
+  <header>
+    <h1>Live Project Tracker • Starter</h1>
+    <div class="actions">
+      <input id="fileInput" type="file" accept=".csv,text/csv" style="display:none" />
+      <button id="btnImport" type="button">Import CSV</button>
+      <button id="btnExport" type="button">Export JSON</button>
+      <button id="btnDelayLog" type="button">Delay Log</button>
+      <button id="btnClear" type="button">Clear</button>
+    </div>
+  </header>
+
+  <main>
+    <table id="taskTable">
+      <thead>
+        <tr>
+          <th>Unique ID</th>
+          <th>Summary</th>
+          <th>Department</th>
+          <th>Start</th>
+          <th>Finish</th>
+          <th>% Complete</th>
+        </tr>
+      </thead>
+      <tbody id="taskBody">
+        <!-- rows injected -->
+      </tbody>
+    </table>
+  </main>
+
+  <footer>
+    <small>Import a CSV with columns like “Task Summary Name”, “Scheduled Start/Finish”, “Assigned Department”.</small>
+  </footer>
+
+  <!-- PapaParse for CSV parsing -->
+  <script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+  <script type="module" src="./app.js"></script>
+</body>
+</html>
