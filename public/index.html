@@ -10,10 +10,10 @@
   <header class="bar">
     <h1>Live Project Tracker</h1>
     <div class="tools">
-      <!-- accept both CSV and XML -->
       <input id="fileInput" type="file" accept=".csv,text/csv,.xml,text/xml,application/xml" hidden />
       <button id="importBtn" aria-label="Import file">Import CSV/XML</button>
       <button id="exportBtn" aria-label="Export end-of-shift CSV">Export CSV</button>
+      <button id="delayBtn" aria-label="Open Delay Log" onclick="location.href='/delay.html'">Delay Log</button>
       <button id="clearBtn" aria-label="Clear current project" onclick="clearProject()">Clear</button>
     </div>
   </header>
