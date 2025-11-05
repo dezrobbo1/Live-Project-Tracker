@@ -68,19 +68,60 @@ window.addEventListener("DOMContentLoaded", () => {
     "resource names": ["resource names","resources","resource name","resourcename"],
     "text30": ["text30","assigned department","department","dept","text 30","text-30","text_30"]
   };
-  function detectDelimiter(firstLine){
+  function detectDelimiter(text){
+    const sample = (text.match(/^[^\r\n]*/)||[""])[0];
     const cands=[",",";","\t","|"];
-    const counts=cands.map(ch => (firstLine.match(new RegExp(`\\${ch}`,"g"))||[]).length);
+    const counts=cands.map(ch => {
+      let count=0, inQuotes=false;
+      for(let i=0;i<sample.length;i++){
+        const c=sample[i];
+        if(c==='"'){
+          if(inQuotes && sample[i+1]==='"'){ i++; }
+          inQuotes=!inQuotes;
+        }else if(c===ch && !inQuotes){
+          count++;
+        }
+      }
+      return count;
+    });
     let best=0; for(let i=1;i<counts.length;i++) if(counts[i]>counts[best]) best=i;
     return cands[best] || ",";
   }
   function parseCSV(text){
-    const lines = text.split(/\r?\n/).filter(l => l.trim().length);
-    if (!lines.length) throw new Error("Empty CSV");
-    const delim = detectDelimiter(lines[0]);
-    const headers = lines[0].split(delim).map(h=>h.replace(/^[\uFEFF\u200B]+/,""));
-    const rows    = lines.slice(1).map(l => l.split(delim));
-    return { headers, rows, delim };
+    if(!text || !text.trim()) throw new Error("Empty CSV");
+    const delim = detectDelimiter(text);
+    const rows=[];
+    let field="", row=[], inQuotes=false;
+    for(let i=0;i<text.length;i++){
+      const ch=text[i];
+      if(ch==='"'){
+        if(inQuotes && text[i+1]==='"'){
+          field+='"';
+          i++;
+        }else{
+          inQuotes=!inQuotes;
+        }
+      }else if(ch===delim && !inQuotes){
+        row.push(field);
+        field="";
+      }else if((ch==='\n' || ch==='\r') && !inQuotes){
+        if(ch==='\r' && text[i+1]==='\n') i++;
+        row.push(field);
+        rows.push(row);
+        row=[];
+        field="";
+      }else{
+        field+=ch;
+      }
+    }
+    if(field.length || row.length){
+      row.push(field);
+      rows.push(row);
+    }
+    if(!rows.length) throw new Error("Empty CSV");
+    const headers = rows.shift().map(h=>h.replace(/^[\uFEFF\u200B]+/,""));
+    const body = rows.filter(r => r.some(cell => (cell||"").trim().length));
+    return { headers, rows: body, delim };
   }
   function indexOfAlias(headers, canonical){
     const wants = (HEADER_ALIASES[canonical] || [canonical]).map(normHeader);
