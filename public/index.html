@@ -2,9 +2,9 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Live Project Tracker</title>
-  <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="/styles.css"/>
 </head>
 <body>
   <header class="bar">
@@ -13,7 +13,7 @@
       <input id="fileInput" type="file" accept=".csv,text/csv" hidden />
       <button id="importBtn" aria-label="Import CSV">Import CSV</button>
       <button id="exportBtn" aria-label="Export end-of-shift CSV">Export CSV</button>
-      <button id="clearBtn" aria-label="Clear current project">Clear project</button>
+      <button id="clearBtn" aria-label="Clear current project">Clear</button>
     </div>
   </header>
 
@@ -21,16 +21,16 @@
     <div id="notice" class="notice">
       Import a Microsoft Project CSV to begin. Showing a 3-day forecast (today → +2 days).
     </div>
+
     <div class="hscroll">
       <table id="taskTable" aria-label="3-day forecast">
         <thead>
           <tr>
-            <th>Summary Task</th>
-            <th>Task</th>
-            <th>Department</th>
-            <th>Planned Start</th>
+            <th>Task Name</th>
+            <th>Task Summary Name</th>
+            <th>Scheduled Start</th>
             <th>Actual Start</th>
-            <th>Delay (min)</th>
+            <th>Assigned Department</th>
             <th>Actions</th>
           </tr>
         </thead>
@@ -39,6 +39,7 @@
     </div>
   </main>
 
+  <!-- Pause modal -->
   <dialog id="pauseDialog" role="dialog" aria-modal="true" aria-labelledby="pauseTitle">
     <form method="dialog">
       <h3 id="pauseTitle">Pause Task</h3>
@@ -65,6 +66,6 @@
     </form>
   </dialog>
 
-  <script defer src="app.js"></script>
+  <script defer src="/app.js"></script>
 </body>
 </html>
