@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width,initial-scale=1" />
   <title>Delay Log</title>
-  <link rel="stylesheet" href="/styles.css?v=20251106a" />
+  <link rel="stylesheet" href="/styles.css?v=20251105h"/>
 </head>
 <body>
   <header class="bar">
@@ -37,6 +37,64 @@
     </div>
   </main>
 
-  <script defer src="/delay.js?v=20251106a"></script>
+  <script>
+    const KEY = "DELAY_LOG_V1";
+
+    function sanitize(entries){
+      if (!Array.isArray(entries)) return [];
+      const cleaned = [];
+      for (const raw of entries){
+        if (!raw || typeof raw !== "object") continue;
+        const entry = {
+          LoggedAt: raw.LoggedAt || raw.loggedAt || "",
+          TaskUID: raw.TaskUID || raw.uid || "",
+          TaskName: raw.TaskName || raw.taskName || "",
+          SummaryTaskName: raw.SummaryTaskName || raw.summaryTaskName || "",
+          Department: raw.Department || raw.department || "",
+          PlannedStart: raw.PlannedStart || raw.plannedStart || "",
+          ActualStart: raw.ActualStart || raw.actualStart || "",
+          Reason: raw.Reason || raw.reason || "",
+          Notes: raw.Notes || raw.notes || ""
+        };
+        const hasContent = Boolean(
+          (entry.Reason && entry.Reason.toString().trim()) ||
+          (entry.Notes && entry.Notes.toString().trim()) ||
+          (entry.TaskName && entry.TaskName.toString().trim()) ||
+          (entry.TaskUID && entry.TaskUID.toString().trim())
+        );
+        if (!hasContent) continue;
+        cleaned.push(entry);
+      }
+      return cleaned;
+    }
+
+    function read() {
+      try { return sanitize(JSON.parse(localStorage.getItem(KEY)||"[]")); }
+      catch { return []; }
+    }
+    function write(arr) { localStorage.setItem(KEY, JSON.stringify(sanitize(arr))); }
+    function fmt(ts){ if(!ts) return ""; const d=new Date(ts); return isNaN(d)?"":d.toLocaleString(); }
+
+    const body = document.getElementById("logBody");
+    const rows = read();
+    rows.forEach(r=>{
+      const tr = document.createElement("tr");
+      tr.innerHTML = `
+        <td>${fmt(r.LoggedAt)}</td>
+        <td>${(r.TaskName||"")}</td>
+        <td>${(r.SummaryTaskName||"")}</td>
+        <td>${(r.Department||"")}</td>
+        <td>${fmt(r.PlannedStart)}</td>
+        <td>${fmt(r.ActualStart)}</td>
+        <td>${(r.Reason||"")}</td>
+        <td>${(r.Notes||"").replace(/</g,"&lt;")}</td>
+      `;
+      body.appendChild(tr);
+    });
+
+    document.getElementById("clearLog").onclick = () => {
+      if (confirm("Clear the entire delay log?")) { write([]); location.reload(); }
+    };
+  </script>
 </body>
 </html>

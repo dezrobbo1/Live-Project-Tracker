@@ -1,15 +1,171 @@
-(function(){
-  const TASK_STORAGE_KEY = "LPT_TASKS_V2";
-  const LEGACY_TASK_KEYS = ["PROJECT_TASKS_V1"];
-  const DELAY_LOG_KEY = "LPT_DELAY_LOG_V1";
-  const LEGACY_DELAY_KEYS = ["DELAY_LOG_V1"];
+// Live Project Tracker — actions work + state persists across pages
+// Features: CSV + MSP XML import, Text30-only Department, hide summaries, robust date parsing,
+// buttons wired, and tasks saved/restored from localStorage so navigation doesn't lose data.
 
+window.addEventListener("DOMContentLoaded", () => {
+  console.log("%c[Tracker] app.js (actions + persistence)", "color:#6aa3ff");
+
+  // ---- DOM ----
+  const importBtn = document.getElementById("importBtn");
+  const fileInput  = document.getElementById("fileInput");
+  const exportBtn  = document.getElementById("exportBtn");
+  const delayBtn   = document.getElementById("delayBtn");
+  const clearBtn   = document.getElementById("clearBtn");
+  const tbody      = document.querySelector("#taskTable tbody");
+
+  const stripBom = (str="") => str.replace(/^\uFEFF/, "").replace(/\u0000/g, "");
+
+  async function readFileSmart(file){
+    if (!file) return "";
+    if (file.arrayBuffer){
+      const buffer = await file.arrayBuffer();
+      if (!buffer.byteLength) return "";
+      const view = new Uint8Array(buffer);
+      const tryDecode = (label, start=0) => {
+        try {
+          return new TextDecoder(label).decode(start ? buffer.slice(start) : buffer);
+        } catch {
+          return null;
+        }
+      };
+
+      if (view[0] === 0xFF && view[1] === 0xFE){
+        return stripBom(tryDecode("utf-16le", 2) || tryDecode("utf-16le") || "");
+      }
+      if (view[0] === 0xFE && view[1] === 0xFF){
+        return stripBom(tryDecode("utf-16be", 2) || tryDecode("utf-16be") || "");
+      }
+      if (view.length >= 3 && view[0] === 0xEF && view[1] === 0xBB && view[2] === 0xBF){
+        return stripBom(tryDecode("utf-8", 3) || "");
+      }
+
+      if (view[0] === 0x00 && view[1] !== 0x00){
+        const decoded = tryDecode("utf-16be");
+        if (decoded) return stripBom(decoded);
+      }
+      if (view[0] !== 0x00 && view[1] === 0x00){
+        const decoded = tryDecode("utf-16le");
+        if (decoded) return stripBom(decoded);
+      }
+
+      const utf8 = tryDecode("utf-8");
+      if (utf8) return stripBom(utf8);
+    }
+
+    if (file.text){
+      const text = await file.text();
+      return stripBom(text);
+    }
+
+    return "";
+  }
+
+  // Pause dialog
+  const pauseDialog   = document.getElementById("pauseDialog");
+  const pauseReason   = document.getElementById("pauseReason");
+  const pauseNotes    = document.getElementById("pauseNotes");
+  const pauseTaskName = document.getElementById("pauseTaskName");
+  const confirmPause  = document.getElementById("confirmPause");
+
+  // ---- State & persistence ----
+  const STORE_KEY = "PROJECT_TASKS_V1";
+  const DELAY_LOG_KEY = "DELAY_LOG_V1";
+  let tasks = [];
+  let pauseUID = null;
+
+  function upgradeTask(task){
+    if (!task || typeof task !== "object") return task;
+    if (!("PlannedStartRaw" in task)) task.PlannedStartRaw = task.PlannedStart || "";
+    if (!("PlannedFinishRaw" in task)) task.PlannedFinishRaw = task.PlannedFinish || "";
+    return task;
+  }
+
+  const save = () => { try { localStorage.setItem(STORE_KEY, JSON.stringify(tasks)); } catch {} };
+  const load = () => {
+    try { const raw = localStorage.getItem(STORE_KEY); const arr = raw ? JSON.parse(raw) : []; return Array.isArray(arr) ? arr : []; }
+    catch { return []; }
+  };
+
+  // Initial restore (so returning from delay.html keeps your project)
+  tasks = load().map(upgradeTask);
+  render();
+
+  // Delay log helpers
+  function sanitizeDelayLogEntries(arr){
+    if (!Array.isArray(arr)) return [];
+    const cleaned = [];
+    for (const raw of arr){
+      if (!raw || typeof raw !== "object") continue;
+      const entry = {
+        LoggedAt: raw.LoggedAt || raw.loggedAt || "",
+        TaskUID: raw.TaskUID || raw.uid || "",
+        TaskName: raw.TaskName || raw.taskName || "",
+        SummaryTaskName: raw.SummaryTaskName || raw.summaryTaskName || "",
+        Department: raw.Department || raw.department || "",
+        PlannedStart: raw.PlannedStart || raw.plannedStart || "",
+        ActualStart: raw.ActualStart || raw.actualStart || "",
+        Reason: raw.Reason || raw.reason || "",
+        Notes: raw.Notes || raw.notes || ""
+      };
+      const hasContent = Boolean(
+        (entry.Reason && entry.Reason.toString().trim()) ||
+        (entry.Notes && entry.Notes.toString().trim()) ||
+        (entry.TaskName && entry.TaskName.toString().trim()) ||
+        (entry.TaskUID && entry.TaskUID.toString().trim())
+      );
+      if (!hasContent) continue;
+      cleaned.push(entry);
+    }
+    return cleaned;
+  }
+
+  const readDelayLog  = () => {
+    try {
+      const parsed = JSON.parse(localStorage.getItem(DELAY_LOG_KEY)||"[]");
+      return sanitizeDelayLogEntries(parsed);
+    } catch {
+      return [];
+    }
+  };
+  const writeDelayLog = (arr) => {
+    const sanitized = sanitizeDelayLogEntries(arr);
+    localStorage.setItem(DELAY_LOG_KEY, JSON.stringify(sanitized));
+  };
+  const appendDelayLog= (entry) => {
+    const a = readDelayLog();
+    a.push(entry);
+    writeDelayLog(a);
+  };
+  // Clean any stray placeholder entries left by older builds once on load.
+  writeDelayLog(readDelayLog());
+
+  // Clear button (called from index.html)
+  window.clearProject = () => {
+    if (!confirm("Clear current project data?")) return;
+    tasks = [];
+    save();
+    const notice = document.getElementById("notice");
+    if (notice) notice.textContent = "Import a Microsoft Project CSV or XML to begin. Showing a 3-day forecast (today → +2 days).";
+    if (fileInput) fileInput.value = "";
+    render();
+    console.log("[Tracker] project cleared");
+  };
+
+  // ========= CSV helpers (tolerant headers / delimiters) =========
+  function normHeader(h){
+    return (h||"").replace(/^[\uFEFF\u200B]+/, "").replace(/[_-]+/g, " ").replace(/[^\p{L}\p{N}%\. ]+/gu, "")
+      .trim().replace(/\s+/g, " ").toLowerCase();
+  }
   const HEADER_ALIASES = {
     "unique id": ["unique id","uniqueid","task unique id","uid","unique id."],
     "name": ["name","task name","taskname"],
+    // old "Summary" (Y/N) is optional now; keep aliases but we'll not require it
     "summary": ["summary","is summary","issummary"],
+
     "outline level": ["outline level","outlinelevel","level","outline lvl","outline"],
     "wbs": ["wbs"],
+
+    // Accept MSP/Excel export variants
     "start": [
       "start","start date","start time","startdate","start datetime","start date time",
       "scheduled start"
@@ -18,56 +174,147 @@
       "finish","finish date","finish time","finishdate","finish datetime","finish date time",
       "scheduled finish"
     ],
+
     "% complete": ["% complete","percent complete","percentcomplete","percent","pct complete","percent complete."],
     "resource names": ["resource names","resources","resource name","resourcename"],
-    "text30": ["text30","assigned department","department","dept","text 30","text-30","text_30"],
-    "task summary name": ["task summary name","summary task name","parent summary","parent task"]
+    "text30": ["text30","assigned department","department","dept","text 30","text-30","text_30","text30 text","text30 department","text30 assigned department"]
   };
-
-  const defaultNotice = "Import a Microsoft Project CSV or XML to begin. Showing a 3-day forecast (today → +2 days).";
-
-  const makeUID = () => {
-    if (typeof crypto !== "undefined" && crypto.randomUUID){
-      return crypto.randomUUID();
+  function detectDelimiter(text){
+    const sample = (text.match(/^[^\r\n]*/)||[""])[0];
+    const cands=[",",";","\t","|"];
+    const counts=cands.map(ch => {
+      let count=0, inQuotes=false;
+      for(let i=0;i<sample.length;i++){
+        const c=sample[i];
+        if(c==='"'){
+          if(inQuotes && sample[i+1]==='"'){ i++; }
+          inQuotes=!inQuotes;
+        }else if(c===ch && !inQuotes){
+          count++;
+        }
+      }
+      return count;
+    });
+    let best=0; for(let i=1;i<counts.length;i++) if(counts[i]>counts[best]) best=i;
+    return cands[best] || ",";
+  }
+  function parseCSV(text){
+    if(!text || !text.trim()) throw new Error("Empty CSV");
+    const delim = detectDelimiter(text);
+    const rows=[];
+    let field="", row=[], inQuotes=false;
+    for(let i=0;i<text.length;i++){
+      const ch=text[i];
+      if(ch==='"'){
+        if(inQuotes && text[i+1]==='"'){
+          field+='"';
+          i++;
+        }else{
+          inQuotes=!inQuotes;
+        }
+      }else if(ch===delim && !inQuotes){
+        row.push(field);
+        field="";
+      }else if((ch==='\n' || ch==='\r') && !inQuotes){
+        if(ch==='\r' && text[i+1]==='\n') i++;
+        row.push(field);
+        rows.push(row);
+        row=[];
+        field="";
+      }else{
+        field+=ch;
+      }
     }
-    return `task-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-  };
-
-  window.addEventListener("DOMContentLoaded", () => {
-    const importBtn = document.getElementById("importBtn");
-    const exportBtn = document.getElementById("exportBtn");
-    const delayBtn = document.getElementById("delayBtn");
-    const clearBtn = document.getElementById("clearBtn");
-    const fileInput = document.getElementById("fileInput");
-    const noticeEl = document.getElementById("notice");
-    const tableBody = document.querySelector("#taskTable tbody");
-
-    const pauseDialog = document.getElementById("pauseDialog");
-    const pauseForm = document.getElementById("pauseForm");
-    const pauseTaskName = document.getElementById("pauseTaskName");
-    const pauseReason = document.getElementById("pauseReason");
-    const pauseNotes = document.getElementById("pauseNotes");
-    const cancelPause = document.getElementById("cancelPause");
-    const dialogSupported = !!(pauseDialog && typeof pauseDialog.showModal === "function" && typeof pauseDialog.close === "function");
-
-    if (!importBtn || !exportBtn || !delayBtn || !clearBtn || !fileInput || !tableBody) {
-      console.warn("[Tracker] Required DOM nodes missing – aborting init");
-      return;
+    if(field.length || row.length){
+      row.push(field);
+      rows.push(row);
     }
+    if(!rows.length) throw new Error("Empty CSV");
+    const headers = rows.shift().map(h=>h.replace(/^[\uFEFF\u200B]+/,""));
+    const body = rows.filter(r => r.some(cell => (cell||"").trim().length));
+    return { headers, rows: body, delim };
+  }
+  function indexOfAlias(headers, canonical){
+    const wants = (HEADER_ALIASES[canonical] || [canonical]).map(normHeader);
+    const normalized = headers.map(normHeader);
+    for (let i=0;i<normalized.length;i++) if (wants.includes(normalized[i])) return i;
+    for (let i=0;i<normalized.length;i++){
+      const h = normalized[i];
+      if (canonical==="start"  && (h==="start date"||h==="start time")) return i;
+      if (canonical==="finish" && (h==="finish date"||h==="finish time")) return i;
+      if (canonical==="% complete" && (h==="percent complete"||h==="percent")) return i;
+      if (canonical==="outline level" && (h==="outline lvl"||h==="outline")) return i;
+    }
+    if (canonical === "text30"){
+      const idx = normalized.findIndex(h => h.includes("text30"));
+      if (idx !== -1) return idx;
+    }
+    return -1;
+  }
+  function buildColumnMap(headers){
+    const col = {
+      uid : indexOfAlias(headers,"unique id"),
+      name: indexOfAlias(headers,"name"),
+      summary:indexOfAlias(headers,"summary"), // may be -1 (missing)
+      outlineLevel:indexOfAlias(headers,"outline level"),
+      wbs:indexOfAlias(headers,"wbs"),
+      start:indexOfAlias(headers,"start"),
+      finish:indexOfAlias(headers,"finish"),
+      pct:indexOfAlias(headers,"% complete"),
+      res:indexOfAlias(headers,"resource names"),
+      text30:indexOfAlias(headers,"text30"),
+      taskSummaryName:indexOfAlias(headers,"task summary name")
+    };
+    const must=["uid","name","outlineLevel","wbs","start","finish","pct"];
+    const missing=must.filter(k=>col[k]===-1);
+    if(missing.length){
+      const seen = headers.map(h=>normHeader(h)).join(" | ");
+      throw new Error(`Missing required columns: ${missing.join(", ")}\nFound (normalized): ${seen}`);
+    }
+    return col;
+  }
 
-    let tasks = loadTasks();
-    let pauseTargetUID = null;
+  // ======= Robust date parser for MSP CSV / locales =======
+  function parseDateFlexible(s){
+    if (!s) return ""; s = String(s).trim();
+    s = s.replace(/\b(mon|tue|wed|thu|fri|sat|sun)(day)?\b[\s,]*/i, ""); // strip weekday
+    s = s.replace(/,/g, "").replace(/\ba\.?m\.?\b/i,"AM").replace(/\bp\.?m\.?\b/i,"PM");
+    let d = new Date(s); if (!isNaN(d)) return d.toISOString();
 
-    render();
+    let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i);
+    if (m){
+      let day=+m[1], mon=+m[2]-1, yr=+m[3]; if (yr<100) yr+=2000;
+      let hh=+(m[4]||0), mm=+(m[5]||0), ss=+(m[6]||0); const ap=m[7];
+      if (ap){ if (/pm/i.test(ap)&&hh<12) hh+=12; if (/am/i.test(ap)&&hh===12) hh=0; }
+      d = new Date(yr,mon,day,hh,mm,ss); if(!isNaN(d)) return d.toISOString();
+    }
+    m = s.match(/^(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i);
+    if (m){
+      const monMap={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
+      const monIdx = monMap[m[2].slice(0,3).toLowerCase()];
+      let yr=+m[3]; if(yr<100) yr+=2000; let hh=+(m[4]||0), mm=+(m[5]||0), ss=+(m[6]||0); const ap=m[7];
+      if (ap){ if (/pm/i.test(ap)&&hh<12) hh+=12; if (/am/i.test(ap)&&hh===12) hh=0; }
+      d = new Date(yr,monIdx,+m[1],hh,mm,ss); if(!isNaN(d)) return d.toISOString();
+    }
+    return "";
+  }
 
-    importBtn.addEventListener("click", () => fileInput.click());
-    delayBtn.addEventListener("click", () => { window.location.href = "/delay.html"; });
-    clearBtn.addEventListener("click", () => {
-      if (!confirm("Clear current project data?")) return;
-      tasks = [];
-      saveTasks();
-      updateNotice();
-      renderTableRows([]);
+  // ========= MSP XML (namespace-safe) =========
+  function ql(root, tag){ const out=[]; const all=root.getElementsByTagName("*"); for(let i=0;i<all.length;i++){ if(all[i].localName===tag) out.push(all[i]); } return out; }
+  function firstText(el, tag){ const found = ql(el, tag)[0]; return found ? (found.textContent||"").trim() : ""; }
+  function parseMSPXML(text){
+    const doc = new DOMParser().parseFromString(text, "application/xml");
+    if (doc.getElementsByTagName("parsererror").length){ throw new Error("XML parse error"); }
+    const projectEls = ql(doc, "Project"); if (!projectEls.length) throw new Error("Not a valid Microsoft Project XML (MSPDI).");
+
+    // ExtendedAttribute definitions: FieldID -> Alias
+    const defMap = new Map();
+    ql(doc, "ExtendedAttributes").forEach(node=>{
+      ql(node,"ExtendedAttribute").forEach(def=>{
+        const id = firstText(def, "FieldID");
+        const alias = firstText(def, "Alias");
+        if (id) defMap.set(id, alias || "");
+      });
     });
 
     exportBtn.addEventListener("click", () => {
@@ -161,142 +408,136 @@
       } catch (err) {
         console.warn("[Tracker] Unable to save delay log", err);
       }
-    }
-
-    function appendDelayLog(entry){
-      const list = loadDelayLog();
-      list.push(entry);
-      saveDelayLog(list);
-    }
-
-    function render(){
-      updateNotice();
-      renderTableRows(filterTasks(tasks));
-    }
-
-    function filterTasks(list){
-      if (!Array.isArray(list) || !list.length) return [];
-      const startOfToday = new Date();
-      startOfToday.setHours(0,0,0,0);
-      const end = new Date(startOfToday);
-      end.setDate(end.getDate() + 3);
-      return [...list].sort(sortByPlannedStart).filter(task => {
-        if (!task.PlannedStart) return true;
-        const startMs = Date.parse(task.PlannedStart);
-        if (isNaN(startMs)) return true;
-        return startMs >= startOfToday.getTime() && startMs < end.getTime();
+      const plannedStartISO = t.start ? new Date(t.start).toISOString() : "";
+      const plannedFinishISO = t.finish ? new Date(t.finish).toISOString() : "";
+      out.push({
+        TaskUID: t.uid,
+        TaskName: t.name,
+        SummaryTaskName: parentSummaryName,
+        Department: departmentFromXML(t.el),
+        PlannedStart: plannedStartISO,
+        PlannedFinish: plannedFinishISO,
+        PlannedStartRaw: t.start || "",
+        PlannedFinishRaw: t.finish || "",
+        PercentComplete: t.pct,
+        State:"Idle",
+        ActualStart:null, ActualFinish:null,
+        TotalActiveMinutes:0, TotalPausedMinutes:0,
+        lastStart:null, lastPause:null,
+        Audit:[]
       });
     }
+    return out;
+  }
 
-    function renderTableRows(rows){
-      tableBody.innerHTML = "";
-      rows.forEach(task => {
-        const tr = document.createElement("tr");
-        tr.innerHTML = `
-          <td>${escapeHTML(task.TaskName)}</td>
-          <td>${escapeHTML(task.SummaryTaskName)}</td>
-          <td>${displayDate(task.PlannedStart, task.PlannedStartRaw)}</td>
-          <td>${displayDate(task.ActualStart)}</td>
-          <td>${escapeHTML(task.Department)}</td>
-          <td class="actions"></td>
-        `;
-        const cell = tr.querySelector(".actions");
-        const startBtn = document.createElement("button");
-        startBtn.textContent = "Start";
-        startBtn.type = "button";
-        startBtn.disabled = task.State === "Running" || task.State === "Finished";
-        startBtn.addEventListener("click", () => handleStart(task.TaskUID));
+  // ========= Import / Export =========
+  function triggerImport(){
+    if (fileInput && typeof fileInput.click === "function"){
+      fileInput.click();
+    }
+  }
+  window.triggerImport = triggerImport;
 
-        const pauseBtn = document.createElement("button");
-        pauseBtn.textContent = "Pause";
-        pauseBtn.type = "button";
-        pauseBtn.disabled = task.State !== "Running";
-        pauseBtn.addEventListener("click", () => handlePause(task.TaskUID));
+  function exportActuals(){
+    const today=new Date();
+    const yyyy=today.getFullYear(), mm=String(today.getMonth()+1).padStart(2,"0"), dd=String(today.getDate()).padStart(2,"0");
+    const shiftDate=`${yyyy}-${mm}-${dd}`;
+    const rows = tasks.map(t=>[
+      t.TaskUID, shiftDate, t.ActualStart||"", t.ActualFinish||"", t.TotalActiveMinutes||0, t.TotalPausedMinutes||0
+    ].join(","));
+    const csv = ["TaskUID,ShiftDate,ActualStart,ActualFinish,TotalActiveMinutes,TotalPausedMinutes", ...rows].join("\n");
+    const blob=new Blob([csv],{type:"text/csv"});
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`shift_actuals_${shiftDate}.csv`; a.click();
+  }
+  window.exportActuals = exportActuals;
 
-        const finishBtn = document.createElement("button");
-        finishBtn.textContent = "Finish";
-        finishBtn.type = "button";
-        finishBtn.disabled = task.State === "Finished";
-        finishBtn.addEventListener("click", () => handleFinish(task.TaskUID));
-
-        cell.append(startBtn, pauseBtn, finishBtn);
-        tableBody.appendChild(tr);
-      });
+  importBtn?.addEventListener("click", triggerImport);
+  fileInput?.addEventListener("change", async (e)=>{
+    const file=e.target.files?.[0]; if(!file) return;
+    const text = await readFileSmart(file);
+    const isXML = /\.xml$/i.test(file.name) || /xml/.test(file.type);
+    try{
+      tasks = isXML ? parseMSPXML(text) : parseCSVToTasks(text);
+      save();
+      console.log(`[Tracker] imported ${tasks.length} task rows from ${isXML?'XML':'CSV'}`);
+      console.table(tasks.slice(0,5).map(t=>({
+        UID:t.TaskUID,
+        Name:t.TaskName,
+        Summary:t.SummaryTaskName,
+        Start:t.PlannedStart || t.PlannedStartRaw,
+        Dept:t.Department
+      })));
+    }catch(err){
+      alert(err.message || "Import error");
+      console.error(err);
+      return;
     }
 
-    function updateNotice(){
-      if (!noticeEl) return;
-      if (!tasks.length){
-        noticeEl.textContent = defaultNotice;
-        return;
-      }
-      const startOfToday = new Date();
-      startOfToday.setHours(0,0,0,0);
-      const end = new Date(startOfToday);
-      end.setDate(end.getDate() + 2);
-      const filtered = filterTasks(tasks);
-      const formatter = new Intl.DateTimeFormat(undefined, { month:"short", day:"numeric" });
-      noticeEl.textContent = `Showing ${filtered.length} of ${tasks.length} tasks (${formatter.format(startOfToday)} → ${formatter.format(end)}).`;
-    }
+  function parseCSVToTasks(text){
+    const parsed = parseCSV(text);
+    const col = buildColumnMap(parsed.headers);
 
-    function handleStart(uid){
-      const task = tasks.find(t => t.TaskUID === uid);
-      if (!task) return;
-      const nowIso = new Date().toISOString();
-      if (!task.ActualStart) task.ActualStart = nowIso;
-      if (task.State === "Paused" && task.lastPause){
-        const pausedMinutes = minutesBetween(task.lastPause, nowIso);
-        task.TotalPausedMinutes += pausedMinutes;
-        task.lastPause = null;
+    // First pass: map rows (keep summaries for WBS lookup)
+    const rows = parsed.rows.map(cells => ({
+      uid:(cells[col.uid]||"").trim(),
+      name:(cells[col.name]||"").trim(),
+      isSummary:/^(y|yes|true|1)$/i.test((cells[col.summary]||"").trim()),
+      level:parseInt((cells[col.outlineLevel]||"1"),10)||1,
+      wbs:(cells[col.wbs]||"").trim(),
+      start:(cells[col.start]||"").trim(),
+      finish:(cells[col.finish]||"").trim(),
+      pct:parseInt((cells[col.pct]||"0"),10)||0,
+      dept:(col.text30!==-1 ? (cells[col.text30]||"").trim() : "")
+    }));
+    const byWBS = new Map(rows.map(r=>[r.wbs,r]));
+    const summaryWBS = new Set();
+    rows.forEach(r => {
+      if (!r.wbs) return;
+      const parts = r.wbs.split(".");
+      for (let i = parts.length - 1; i > 0; i--){
+        summaryWBS.add(parts.slice(0, i).join("."));
       }
-      task.State = "Running";
-      task.lastStart = nowIso;
-      task.Audit.push({ type:"start", at: nowIso });
-      saveTasks();
-      render();
-    }
+    });
 
-    function handlePause(uid){
-      const task = tasks.find(t => t.TaskUID === uid);
-      if (!task || task.State !== "Running") return;
-      if (!dialogSupported || !pauseDialog || !pauseTaskName || !pauseReason || !pauseNotes){
-        const reasonInput = prompt(`Pause "${task.TaskName}" — enter reason`);
-        const reason = reasonInput ? reasonInput.trim() : "";
-        if (!reason) return;
-        const notesInput = prompt("Notes (optional)");
-        const notes = notesInput ? notesInput.trim() : "";
-        applyPause(uid, reason, notes);
-        return;
-      }
-      pauseTargetUID = uid;
-      pauseTaskName.textContent = task.TaskName || "";
-      pauseReason.value = "";
-      pauseNotes.value = "";
-      pauseDialog.showModal();
-    }
+      return {
+        uid:(cells[col.uid]||"").trim(),
+        name:(cells[col.name]||"").trim(),
+        isSummary,
+        wbs:(cells[col.wbs]||"").trim(),
+        start:(cells[col.start]||"").trim(),
+        finish:(cells[col.finish]||"").trim(),
+        pct:parseInt((cells[col.pct]||"0"),10)||0,
+        dept:(col.text30!==-1 ? (cells[col.text30]||"").trim() : ""),
+        directParent:(col.taskSummaryName!==-1 ? (cells[col.taskSummaryName]||"").trim() : "")
+      };
+    });
 
-    function applyPause(uid, reason, notes){
-      const task = tasks.find(t => t.TaskUID === uid);
-      if (!task || task.State !== "Running") return;
-      const nowIso = new Date().toISOString();
-      if (task.lastStart){
-        const activeMinutes = minutesBetween(task.lastStart, nowIso);
-        task.TotalActiveMinutes += activeMinutes;
+    const byWBS = new Map(rows.map(r=>[r.wbs,r]));
+    const out=[];
+    for(const r of rows){
+      if (r.isSummary || summaryWBS.has(r.wbs)) continue;
+      let parentSummaryName="";
+      if (r.wbs && r.wbs.includes(".")){
+        const parentWBS = r.wbs.split(".").slice(0,-1).join(".");
+        parentSummaryName = byWBS.get(parentWBS)?.name || "";
       }
-      task.State = "Paused";
-      task.lastStart = null;
-      task.lastPause = nowIso;
-      task.Audit.push({ type:"pause", at: nowIso, reason, notes });
-      appendDelayLog({
-        LoggedAt: nowIso,
-        TaskUID: task.TaskUID,
-        TaskName: task.TaskName,
-        SummaryTaskName: task.SummaryTaskName,
-        Department: task.Department,
-        PlannedStart: task.PlannedStart,
-        ActualStart: task.ActualStart,
-        Reason: reason,
-        Notes: notes
+      const plannedStartISO = parseDateFlexible(r.start);
+      const plannedFinishISO = parseDateFlexible(r.finish);
+      out.push({
+        TaskUID:r.uid,
+        TaskName:r.name,
+        SummaryTaskName: parentSummaryName,
+        Department:r.dept,
+        PlannedStart: plannedStartISO,
+        PlannedFinish: plannedFinishISO,
+        PlannedStartRaw: r.start,
+        PlannedFinishRaw: r.finish,
+        PercentComplete: r.pct,
+        State:"Idle",
+        ActualStart:null, ActualFinish:null,
+        TotalActiveMinutes:0, TotalPausedMinutes:0,
+        lastStart:null, lastPause:null,
+        Audit:[]
       });
       saveTasks();
       render();
@@ -331,6 +572,12 @@
       }
       return parseCSVToTasks(trimmed);
     }
+    return out;
+  }
+
+  exportBtn?.addEventListener("click", exportActuals);
+  delayBtn?.addEventListener("click", () => { window.location.href = "/delay.html"; });
+  clearBtn?.addEventListener("click", () => { window.clearProject(); });
 
     function parseMSPXml(xmlText){
       const parser = new DOMParser();
@@ -552,190 +799,53 @@
           bestCount = count;
         }
       }
-      return best;
-    }
+      t.State="Finished"; t.ActualFinish=now; t.lastStart=null; t.lastPause=null;
+      (t.Audit ||= []).push({type:"Finish",time:now});
+      save(); render();
+    }catch(e){ console.error("finishTask error", e); }
+  }
+  window.startTask = startTask;
+  window.pauseTask = pauseTask;
+  window.finishTask = finishTask;
 
-    function buildColumnMap(headers){
-      const normed = headers.map(normHeader);
-      const findIndex = key => indexOfAlias(normed, key);
-      const col = {
-        uid: findIndex("unique id"),
-        name: findIndex("name"),
-        summary: findIndex("summary"),
-        outlineLevel: findIndex("outline level"),
-        wbs: findIndex("wbs"),
-        start: findIndex("start"),
-        finish: findIndex("finish"),
-        pct: findIndex("% complete"),
-        res: findIndex("resource names"),
-        text30: findIndex("text30"),
-        taskSummaryName: findIndex("task summary name")
-      };
-      const must = ["uid","name","outlineLevel","wbs","start","finish","pct"];
-      const missing = must.filter(key => col[key] === -1);
-      if (missing.length){
-        throw new Error(`Missing required columns: ${missing.join(", ")}`);
+  tbody?.addEventListener("click", (event) => {
+    const btn = event.target.closest("button[data-action]");
+    if (!btn || !tbody.contains(btn)) return;
+    const uid = btn.dataset.uid;
+    if (!uid) return;
+    const action = btn.dataset.action;
+    if (action === "start") {
+      startTask(uid);
+    } else if (action === "pause") {
+      pauseTask(uid);
+    } else if (action === "finish") {
+      finishTask(uid);
+    }
+  });
+
+  confirmPause?.addEventListener("click",(e)=>{
+    e.preventDefault();
+    if(!pauseReason.value) return;
+    try{
+      const t = tasks.find(x=>x.TaskUID===pauseUID); if(!t) return;
+      const now = new Date().toISOString();
+      if(t.State==="Active" && t.lastStart){
+        const active = new Date(now) - new Date(t.lastStart);
+        t.TotalActiveMinutes = (t.TotalActiveMinutes||0) + (active>0 ? Math.round(active/60000) : 0);
       }
       return col;
     }
 
-    function indexOfAlias(headers, key){
-      const aliases = HEADER_ALIASES[key] || [key];
-      for (let i = 0; i < headers.length; i++){
-        if (aliases.some(alias => headers[i] === normHeader(alias))){
-          return i;
-        }
-      }
-      return -1;
-    }
-
-    function normHeader(header){
-      let value = header || "";
-      value = value.replace(/^[\uFEFF\u200B]+/, "");
-      if (typeof value.normalize === "function"){
-        value = value.normalize("NFKD");
-      }
-      // strip combining marks that remain after normalization
-      value = value.replace(/[\u0300-\u036f]/g, "");
-      value = value.replace(/[_-]+/g, " ");
-      // keep only ASCII letters/numbers plus % . and spaces for broad browser support
-      value = value.replace(/[^A-Za-z0-9%\. ]+/g, " ");
-      return value
-        .trim()
-        .replace(/\s+/g, " ")
-        .toLowerCase();
-    }
-
-    function parseDateField(value){
-      const raw = (value || "").trim();
-      if (!raw) return { iso: null, raw: "" };
-      let date = new Date(raw);
-      if (isNaN(date)){ // try dd/MM/yyyy HH:mm or similar
-        const parts = raw.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?)?$/);
-        if (parts){
-          const m = parseInt(parts[1], 10);
-          const d = parseInt(parts[2], 10);
-          const y = parseInt(parts[3], 10);
-          const hh = parseInt(parts[4] || "0", 10);
-          const mm = parseInt(parts[5] || "0", 10);
-          const ss = parseInt(parts[6] || "0", 10);
-          date = new Date(y < 100 ? 2000 + y : y, m - 1, d, hh, mm, ss);
-        }
-      }
-      if (isNaN(date)) return { iso: null, raw };
-      return { iso: date.toISOString(), raw };
-    }
-
-    function parseDateSimple(value){
-      if (!value) return null;
-      const date = new Date(value);
-      return isNaN(date) ? null : date;
-    }
-
-    function displayDate(iso, fallback){
-      if (iso){
-        const date = parseDateSimple(iso);
-        if (date) return date.toLocaleString();
-      }
-      if (fallback){
-        const date = parseDateSimple(fallback);
-        if (date) return date.toLocaleString();
-        return escapeHTML(fallback);
-      }
-      return "";
-    }
-
-    function sortByPlannedStart(a, b){
-      const aMs = a.PlannedStart ? Date.parse(a.PlannedStart) : NaN;
-      const bMs = b.PlannedStart ? Date.parse(b.PlannedStart) : NaN;
-      if (isNaN(aMs) && isNaN(bMs)) return a.TaskName.localeCompare(b.TaskName);
-      if (isNaN(aMs)) return 1;
-      if (isNaN(bMs)) return -1;
-      if (aMs === bMs) return a.TaskName.localeCompare(b.TaskName);
-      return aMs - bMs;
-    }
-
-    function minutesBetween(startIso, endIso){
-      if (!startIso || !endIso) return 0;
-      const start = Date.parse(startIso);
-      const end = Date.parse(endIso);
-      if (isNaN(start) || isNaN(end)) return 0;
-      return Math.max(0, Math.round((end - start) / 60000));
-    }
-
-    function readStorage(key){
-      try {
-        const value = localStorage.getItem(key);
-        return value ? JSON.parse(value) : null;
-      } catch {
-        return null;
-      }
-    }
-
-    function sanitizeDelayEntries(entries){
-      if (!Array.isArray(entries)) return [];
-      return entries
-        .map(entry => ({
-          LoggedAt: toISO(entry.LoggedAt || entry.loggedAt),
-          TaskUID: entry.TaskUID || entry.uid || "",
-          TaskName: entry.TaskName || entry.taskName || "",
-          SummaryTaskName: entry.SummaryTaskName || entry.summaryTaskName || "",
-          Department: entry.Department || entry.department || "",
-          PlannedStart: toISO(entry.PlannedStart || entry.plannedStart),
-          ActualStart: toISO(entry.ActualStart || entry.actualStart),
-          Reason: entry.Reason || entry.reason || "",
-          Notes: entry.Notes || entry.notes || ""
-        }))
-        .filter(entry => entry.TaskUID || entry.TaskName || entry.Reason || entry.Notes);
-    }
-
-    function toISO(value){
-      if (!value) return null;
-      const date = new Date(value);
-      return isNaN(date) ? null : date.toISOString();
-    }
-
-    function escapeHTML(str){
-      return (str || "").replace(/[&<>"']/g, ch => ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;"
-      })[ch]);
-    }
-
-    function formatDateForFile(date){
-      const y = date.getFullYear();
-      const m = String(date.getMonth() + 1).padStart(2, "0");
-      const d = String(date.getDate()).padStart(2, "0");
-      const hh = String(date.getHours()).padStart(2, "0");
-      const mm = String(date.getMinutes()).padStart(2, "0");
-      return `${y}${m}${d}_${hh}${mm}`;
-    }
-
-    function buildExportCSV(list){
-      const header = [
-        "TaskUID","TaskName","SummaryTaskName","Department",
-        "PlannedStart","PlannedFinish","ActualStart","ActualFinish",
-        "State","TotalActiveMinutes","TotalPausedMinutes"
-      ];
-      const lines = [header.join(",")];
-      list.forEach(task => {
-        const row = [
-          quote(task.TaskUID),
-          quote(task.TaskName),
-          quote(task.SummaryTaskName),
-          quote(task.Department),
-          quote(task.PlannedStart || task.PlannedStartRaw || ""),
-          quote(task.PlannedFinish || task.PlannedFinishRaw || ""),
-          quote(task.ActualStart || ""),
-          quote(task.ActualFinish || ""),
-          quote(task.State),
-          task.TotalActiveMinutes,
-          task.TotalPausedMinutes
-        ];
-        lines.push(row.join(","));
+      appendDelayLog({
+        LoggedAt: now,
+        TaskUID: t.TaskUID,
+        TaskName: t.TaskName,
+        SummaryTaskName: t.SummaryTaskName || "",
+        Department: t.Department || "",
+        PlannedStart: t.PlannedStart || t.PlannedStartRaw || "",
+        ActualStart: t.ActualStart || "",
+        Reason: pauseReason.value,
+        Notes: pauseNotes.value || ""
       });
       return lines.join("\n");
     }
@@ -745,46 +855,102 @@
       return /[",\n]/.test(str) ? `"${str.replace(/"/g,'""')}"` : str;
     }
 
-    async function readFileSmart(file){
-      if (!file) return "";
-      if (file.arrayBuffer){
-        const buffer = await file.arrayBuffer();
-        const view = new Uint8Array(buffer);
-        if (view.length >= 2){
-          if (typeof TextDecoder === "function"){
-            if (view[0] === 0xFF && view[1] === 0xFE){
-              return new TextDecoder("utf-16le").decode(buffer.slice(2));
-            }
-            if (view[0] === 0xFE && view[1] === 0xFF){
-              return new TextDecoder("utf-16be").decode(buffer.slice(2));
-            }
-          }
-        }
-        if (typeof TextDecoder === "function" && view.length >= 3 && view[0] === 0xEF && view[1] === 0xBB && view[2] === 0xBF){
-          return new TextDecoder("utf-8").decode(buffer.slice(3));
-        }
-        if (typeof TextDecoder === "function"){
-          try {
-            return new TextDecoder("utf-8").decode(buffer);
-          } catch {
-            // continue to fallback below
-          }
-        }
-        return await file.text();
-      }
-      if (file.text) return await file.text();
-      return "";
+  // ========= Render (3-day window) =========
+  function windowRange3d(){
+    const now=new Date();
+    const start=new Date(now.getFullYear(),now.getMonth(),now.getDate(),0,0,0,0);
+    const end=new Date(start.getTime()+3*24*3600*1000-1);
+    return {start,end};
+  }
+  function parseMillisFlexible(value){
+    if (!value) return NaN;
+    const d = new Date(value);
+    if (!isNaN(d)) return d.getTime();
+    const parsed = Date.parse(value);
+    return isNaN(parsed) ? NaN : parsed;
+  }
+  function fmt(ts, fallback=""){ 
+    if (ts){
+      const d=new Date(ts);
+      if(!isNaN(d)) return d.toLocaleString();
     }
-
-    function textContent(node, tag){
-      const el = node.getElementsByTagName(tag)[0];
-      return el && el.textContent ? el.textContent.trim() : "";
+    if (fallback){
+      const d = new Date(fallback);
+      if(!isNaN(d)) return d.toLocaleString();
+      return fallback;
     }
+    return "";
+  }
 
-    // expose for manual testing
-    window.__LiveProjectTracker = {
-      loadTasks: () => tasks,
-      clear: () => { tasks = []; saveTasks(); render(); }
-    };
-  });
-})();
+  function render(){
+    if (!tbody) return;
+    const {start,end}=windowRange3d();
+    const winStart = start.getTime();
+    const winEnd = end.getTime();
+    const filtered = tasks
+      .filter(t => {
+        const ps = parseMillisFlexible(t.PlannedStart || t.PlannedStartRaw);
+        const pf = parseMillisFlexible(t.PlannedFinish || t.PlannedFinishRaw);
+        if (isNaN(ps) || isNaN(pf)) return true; // still show tasks if no dates parsed
+        return ps <= winEnd && pf >= winStart;
+      })
+      .sort((a,b)=>{
+        const aTime = parseMillisFlexible(a.PlannedStart || a.PlannedStartRaw);
+        const bTime = parseMillisFlexible(b.PlannedStart || b.PlannedStartRaw);
+        if (isNaN(aTime) && isNaN(bTime)) return 0;
+        if (isNaN(aTime)) return 1;
+        if (isNaN(bTime)) return -1;
+        return aTime - bTime;
+      });
+
+    tbody.innerHTML="";
+    filtered.forEach(t=>{
+      const stateBadge = t.State!=="Idle" ? `<span class="state-badge state-${t.State.toLowerCase()}">${t.State}</span>` : "";
+      const tr=document.createElement("tr");
+      tr.innerHTML = `
+        <td>${t.TaskName || ""} ${stateBadge}</td>
+        <td>${t.SummaryTaskName||""}</td>
+        <td>${fmt(t.PlannedStart, t.PlannedStartRaw)}</td>
+        <td>${fmt(t.ActualStart)}</td>
+        <td>${t.Department||""}</td>
+        <td class="actions"></td>
+      `;
+      const actionsCell = tr.querySelector(".actions");
+      const btnRow=document.createElement("div");
+      btnRow.className="btnrow";
+
+      const startBtn=document.createElement("button");
+      startBtn.className="primary";
+      startBtn.dataset.action="start";
+      startBtn.dataset.uid=t.TaskUID;
+      startBtn.textContent = t.State==="Paused"?"Resume":"Start";
+      startBtn.disabled = t.State==="Active";
+      btnRow.appendChild(startBtn);
+
+      const pauseBtn=document.createElement("button");
+      pauseBtn.dataset.action="pause";
+      pauseBtn.dataset.uid=t.TaskUID;
+      pauseBtn.textContent="Pause";
+      pauseBtn.disabled = t.State!=="Active";
+      btnRow.appendChild(pauseBtn);
+
+      const finishBtn=document.createElement("button");
+      finishBtn.className="success";
+      finishBtn.dataset.action="finish";
+      finishBtn.dataset.uid=t.TaskUID;
+      finishBtn.textContent="Finish";
+      finishBtn.disabled = !(t.State==="Active"||t.State==="Paused");
+      btnRow.appendChild(finishBtn);
+
+      actionsCell.appendChild(btnRow);
+      tbody.appendChild(tr);
+    });
+
+    const notice = document.getElementById("notice");
+    if (notice){
+      notice.textContent = tasks.length
+        ? "Showing a 3-day forecast (today → +2 days)."
+        : "Import a Microsoft Project CSV or XML to begin. Showing a 3-day forecast (today → +2 days).";
+    }
+  }
+});
