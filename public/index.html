@@ -2,19 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Live Project Tracker</title>
-  <link rel="stylesheet" href="/styles.css?v=20251105d"/>
+  <link rel="stylesheet" href="/styles.css?v=20251106a" />
 </head>
 <body>
   <header class="bar">
     <h1>Live Project Tracker</h1>
     <div class="tools">
       <input id="fileInput" type="file" accept=".csv,text/csv,.xml,text/xml,application/xml" hidden />
-      <button id="importBtn" aria-label="Import file">Import CSV/XML</button>
-      <button id="exportBtn" aria-label="Export end-of-shift CSV">Export CSV</button>
-      <button aria-label="Open Delay Log" onclick="location.href='/delay.html'">Delay Log</button>
-      <button aria-label="Clear current project" onclick="clearProject()">Clear</button>
+      <button id="importBtn" type="button">Import CSV/XML</button>
+      <button id="exportBtn" type="button">Export CSV</button>
+      <button id="delayBtn" type="button">Delay Log</button>
+      <button id="clearBtn" type="button">Clear</button>
     </div>
   </header>
 
@@ -26,12 +26,12 @@
     <div class="hscroll">
       <table id="taskTable" aria-label="3-day forecast">
         <colgroup>
-          <col class="taskname">
-          <col class="summary">
-          <col class="start">
-          <col class="actual">
-          <col class="dept">
-          <col class="actions">
+          <col class="taskname" />
+          <col class="summary" />
+          <col class="start" />
+          <col class="actual" />
+          <col class="dept" />
+          <col class="actions" />
         </colgroup>
         <thead>
           <tr>
@@ -48,9 +48,8 @@
     </div>
   </main>
 
-  <!-- Pause dialog -->
-  <dialog id="pauseDialog" role="dialog" aria-modal="true" aria-labelledby="pauseTitle">
-    <form method="dialog">
+  <dialog id="pauseDialog" aria-modal="true" aria-labelledby="pauseTitle">
+    <form id="pauseForm">
       <h3 id="pauseTitle">Pause Task</h3>
       <p class="muted"><b id="pauseTaskName"></b></p>
       <label>Reason
@@ -69,12 +68,12 @@
         <textarea id="pauseNotes" rows="3" placeholder="Optional"></textarea>
       </label>
       <menu>
-        <button value="cancel">Cancel</button>
-        <button id="confirmPause" value="default">Pause</button>
+        <button type="button" id="cancelPause">Cancel</button>
+        <button type="submit" id="confirmPause">Pause</button>
       </menu>
     </form>
   </dialog>
 
-  <script defer src="/app.js?v=20251105d"></script>
+  <script defer src="/app.js?v=20251106a"></script>
 </body>
 </html>
