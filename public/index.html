@@ -1,0 +1,79 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Live Project Tracker</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="bar">
+    <h1>Live Project Tracker</h1>
+    <div class="tools">
+      <label class="inline">
+        Department
+        <select id="deptFilter" aria-label="Department filter">
+          <option value="All">All</option>
+          <option>Ops</option>
+          <option>Mech</option>
+          <option>Rigging</option>
+          <option>Instruments</option>
+        </select>
+      </label>
+
+      <input id="fileInput" type="file" accept=".csv,text/csv" hidden />
+      <button id="importBtn" aria-label="Import CSV">Import CSV</button>
+      <button id="exportBtn" aria-label="Export end-of-shift CSV">Export CSV</button>
+      <button id="clearBtn" aria-label="Clear current project">Clear project</button>
+    </div>
+  </header>
+
+  <main>
+    <div id="notice" class="notice">Import a Microsoft Project CSV to begin. Showing a 3-day forecast (today → +2 days).</div>
+    <div class="hscroll">
+      <table id="taskTable" aria-label="3-day forecast">
+        <thead>
+          <tr>
+            <th>Summary Task</th>
+            <th>Task</th>
+            <th>Department</th>
+            <th>Planned Start</th>
+            <th>Actual Start</th>
+            <th>Delay (min)</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </main>
+
+  <dialog id="pauseDialog" role="dialog" aria-modal="true" aria-labelledby="pauseTitle">
+    <form method="dialog">
+      <h3 id="pauseTitle">Pause Task</h3>
+      <p class="muted"><b id="pauseTaskName"></b></p>
+      <label>Reason
+        <select id="pauseReason" required>
+          <option value="">Select…</option>
+          <option>Access/Permit</option>
+          <option>Material</option>
+          <option>Manpower</option>
+          <option>Weather</option>
+          <option>Breakdown</option>
+          <option>Awaiting QA</option>
+          <option>Other</option>
+        </select>
+      </label>
+      <label>Notes
+        <textarea id="pauseNotes" rows="3" placeholder="Optional"></textarea>
+      </label>
+      <menu>
+        <button value="cancel">Cancel</button>
+        <button id="confirmPause" value="default">Pause</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <script src="/app.js"></script>
+</body>
+</html>
