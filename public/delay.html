@@ -1,0 +1,41 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Delay Log</title>
+  <link rel="stylesheet" href="/styles.css"/>
+</head>
+<body>
+  <header class="bar">
+    <h1>Delay Log</h1>
+    <div class="tools">
+      <button id="backBtn" onclick="location.href='/'">← Back to Tracker</button>
+      <button id="exportDelayBtn">Export Delay CSV</button>
+      <button id="clearDelayBtn">Clear Delay Log</button>
+    </div>
+  </header>
+
+  <main>
+    <div class="hscroll">
+      <table id="delayTable" aria-label="Delay log">
+        <thead>
+          <tr>
+            <th>Logged At</th>
+            <th>Task Name</th>
+            <th>Task Summary Name</th>
+            <th>Assigned Department</th>
+            <th>Scheduled Start</th>
+            <th>Actual Start</th>
+            <th>Reason</th>
+            <th>Notes</th>
+          </tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+  </main>
+
+  <script defer src="/delay.js"></script>
+</body>
+</html>
