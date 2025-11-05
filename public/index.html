@@ -10,16 +10,17 @@
   <header class="bar">
     <h1>Live Project Tracker</h1>
     <div class="tools">
-      <input id="fileInput" type="file" accept=".csv,text/csv" hidden />
-      <button id="importBtn" aria-label="Import CSV">Import CSV</button>
+      <!-- accept both CSV and XML -->
+      <input id="fileInput" type="file" accept=".csv,text/csv,.xml,text/xml,application/xml" hidden />
+      <button id="importBtn" aria-label="Import file">Import CSV/XML</button>
       <button id="exportBtn" aria-label="Export end-of-shift CSV">Export CSV</button>
-      <button id="clearBtn" aria-label="Clear current project">Clear</button>
+      <button id="clearBtn" aria-label="Clear current project" onclick="clearProject()">Clear</button>
     </div>
   </header>
 
   <main>
     <div id="notice" class="notice">
-      Import a Microsoft Project CSV to begin. Showing a 3-day forecast (today → +2 days).
+      Import a Microsoft Project CSV or XML to begin. Showing a 3-day forecast (today → +2 days).
     </div>
 
     <div class="hscroll">
