@@ -113,11 +113,22 @@ window.addEventListener("DOMContentLoaded", () => {
   const HEADER_ALIASES = {
     "unique id": ["unique id","uniqueid","task unique id","uid","unique id."],
     "name": ["name","task name","taskname"],
+    // old "Summary" (Y/N) is optional now; keep aliases but we'll not require it
     "summary": ["summary","is summary","issummary"],
+
     "outline level": ["outline level","outlinelevel","level","outline lvl","outline"],
     "wbs": ["wbs"],
-    "start": ["start","start date","start time","startdate","start datetime","start date time"],
-    "finish": ["finish","finish date","finish time","finishdate","finish datetime","finish date time"],
+
+    // Accept MSP/Excel export variants
+    "start": [
+      "start","start date","start time","startdate","start datetime","start date time",
+      "scheduled start"
+    ],
+    "finish": [
+      "finish","finish date","finish time","finishdate","finish datetime","finish date time",
+      "scheduled finish"
+    ],
+
     "% complete": ["% complete","percent complete","percentcomplete","percent","pct complete","percent complete."],
     "resource names": ["resource names","resources","resource name","resourcename"],
     "text30": ["text30","assigned department","department","dept","text 30","text-30","text_30","text30 text","text30 department","text30 assigned department"]
@@ -198,16 +209,17 @@ window.addEventListener("DOMContentLoaded", () => {
     const col = {
       uid : indexOfAlias(headers,"unique id"),
       name: indexOfAlias(headers,"name"),
-      summary:indexOfAlias(headers,"summary"),
+      summary:indexOfAlias(headers,"summary"), // may be -1 (missing)
       outlineLevel:indexOfAlias(headers,"outline level"),
       wbs:indexOfAlias(headers,"wbs"),
       start:indexOfAlias(headers,"start"),
       finish:indexOfAlias(headers,"finish"),
       pct:indexOfAlias(headers,"% complete"),
       res:indexOfAlias(headers,"resource names"),
-      text30:indexOfAlias(headers,"text30")
+      text30:indexOfAlias(headers,"text30"),
+      taskSummaryName:indexOfAlias(headers,"task summary name")
     };
-    const must=["uid","name","summary","outlineLevel","wbs","start","finish","pct"];
+    const must=["uid","name","outlineLevel","wbs","start","finish","pct"];
     const missing=must.filter(k=>col[k]===-1);
     if(missing.length){
       const seen = headers.map(h=>normHeader(h)).join(" | ");
@@ -373,7 +385,20 @@ window.addEventListener("DOMContentLoaded", () => {
       }
     });
 
-    // Emit only working tasks
+      return {
+        uid:(cells[col.uid]||"").trim(),
+        name:(cells[col.name]||"").trim(),
+        isSummary,
+        wbs:(cells[col.wbs]||"").trim(),
+        start:(cells[col.start]||"").trim(),
+        finish:(cells[col.finish]||"").trim(),
+        pct:parseInt((cells[col.pct]||"0"),10)||0,
+        dept:(col.text30!==-1 ? (cells[col.text30]||"").trim() : ""),
+        directParent:(col.taskSummaryName!==-1 ? (cells[col.taskSummaryName]||"").trim() : "")
+      };
+    });
+
+    const byWBS = new Map(rows.map(r=>[r.wbs,r]));
     const out=[];
     for(const r of rows){
       if (r.isSummary || summaryWBS.has(r.wbs)) continue;
