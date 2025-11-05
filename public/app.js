@@ -20,6 +20,21 @@ window.addEventListener("DOMContentLoaded", () => {
   let tasks = [];
   let pauseUID = null;
 
+  // ---- Delay log (localStorage) ----
+  const DELAY_LOG_KEY = "DELAY_LOG_V1";
+  function readDelayLog(){
+    try { return JSON.parse(localStorage.getItem(DELAY_LOG_KEY) || "[]"); }
+    catch { return []; }
+  }
+  function writeDelayLog(arr){
+    localStorage.setItem(DELAY_LOG_KEY, JSON.stringify(arr));
+  }
+  function appendDelayLog(entry){
+    const arr = readDelayLog();
+    arr.push(entry);
+    writeDelayLog(arr);
+  }
+
   // Expose a hard reset for the Clear button
   window.clearProject = () => {
     if (!confirm("Clear current project data?")) return;
@@ -96,41 +111,32 @@ window.addEventListener("DOMContentLoaded", () => {
   // ---- MSP XML (MSPDI) importer ----
   function parseMSPXML(text){
     const doc = new DOMParser().parseFromString(text, "application/xml");
-    // Basic validity check
     const proj = doc.querySelector("Project");
     if (!proj) throw new Error("Not a valid Microsoft Project XML (MSPDI).");
 
-    // Build ExtendedAttribute definitions map: FieldID -> Alias (e.g., Text30 alias "Assigned department")
-    const defMap = new Map();
+    const defMap = new Map(); // FieldID -> Alias
     doc.querySelectorAll("ExtendedAttributes > ExtendedAttribute").forEach(def=>{
       const id = def.querySelector("FieldID")?.textContent?.trim();
       const alias = def.querySelector("Alias")?.textContent?.trim() || "";
       if (id) defMap.set(id, alias);
     });
 
-    // Helper to pick Department from task's extended attributes or ResourceNames
     function pickDepartmentFromXML(taskEl){
-      // Check ExtendedAttribute values with alias containing "department"
-      const attrs = taskEl.querySelectorAll("ExtendedAttribute");
       let candidate = "";
+      const attrs = taskEl.querySelectorAll("ExtendedAttribute");
       attrs.forEach(a=>{
         const id = a.querySelector("FieldID")?.textContent?.trim();
         const val = a.querySelector("Value")?.textContent?.trim() || "";
         const alias = id ? (defMap.get(id) || "") : "";
         if (!candidate && alias && /department/i.test(alias) && val) candidate = val;
-        // Fallback heuristic: Text30 is FieldID 188743734 in MSP (best-effort)
-        if (!candidate && id === "188743734" && val) candidate = val;
+        if (!candidate && id === "188743734" && val) candidate = val; // Text30 heuristic
       });
       if (candidate) return candidate;
-
-      // Fallback to ResourceNames (comma-separated)
       const rn = taskEl.querySelector("ResourceNames")?.textContent?.trim() || "";
       if (rn) return rn.split(",")[0].trim();
-
       return "";
     }
 
-    // We’ll build hierarchy using OutlineLevel like CSV path
     const stack = [];
     const out = [];
     doc.querySelectorAll("Tasks > Task").forEach(taskEl=>{
@@ -142,10 +148,7 @@ window.addEventListener("DOMContentLoaded", () => {
       const finish= taskEl.querySelector("Finish")?.textContent?.trim() || "";
       const pct   = parseInt(taskEl.querySelector("PercentComplete")?.textContent || "0", 10) || 0;
 
-      // Keep track of names by outline level
       stack[olvl] = name; stack.length = olvl + 1;
-
-      // Skip the "Project Summary Task" and summary rows for table display
       if (summary) return;
 
       const summaryName = olvl > 1 ? (stack[olvl - 1] || "") : "";
@@ -233,6 +236,20 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     t.State="Paused"; t.lastStart=null; t.lastPause=now;
     (t.Audit ||= []).push({type:"Pause",time:now,reason:pauseReason.value,notes:pauseNotes.value||""});
+
+    // 🔴 Save to Delay Log
+    appendDelayLog({
+      LoggedAt: now,
+      TaskUID: t.TaskUID,
+      TaskName: t.TaskName,
+      SummaryTaskName: t.SummaryTaskName || "",
+      Department: t.Department || "",
+      PlannedStart: t.PlannedStart || "",
+      ActualStart: t.ActualStart || "",
+      Reason: pauseReason.value,
+      Notes: pauseNotes.value || ""
+    });
+
     pauseDialog.close(); render();
   });
 
@@ -288,7 +305,6 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   exportBtn.addEventListener("click", ()=>{
-    // Keep CSV export for end-of-shift actuals (simple & robust)
     const today=new Date();
     const yyyy=today.getFullYear(), mm=String(today.getMonth()+1).padStart(2,"0"), dd=String(today.getDate()).padStart(2,"0");
     const shiftDate=`${yyyy}-${mm}-${dd}`;
@@ -301,22 +317,13 @@ window.addEventListener("DOMContentLoaded", () => {
   });
 
   // ---- Render (3-day window) ----
-  function windowRange3d(){
-    const now=new Date();
-    const start=new Date(now.getFullYear(),now.getMonth(),now.getDate(),0,0,0,0);
-    const end=new Date(start.getTime()+3*24*3600*1000-1);
-    return {start,end};
-  }
-  function overlaps(ps,pf,win){ return ps<=win.end.getTime() && pf>=win.start.getTime(); }
-  function fmt(ts){ if(!ts) return ""; return new Date(ts).toLocaleString(); }
-
   function render(){
     const {start,end}=windowRange3d();
     const filtered = tasks
       .filter(t => {
         const ps = new Date(t.PlannedStart || 0).getTime();
         const pf = new Date(t.PlannedFinish || 0).getTime();
-        if (!ps || !pf) return true; // if dates missing, show anyway
+        if (!ps || !pf) return true; // show tasks even if dates missing
         return overlaps(ps,pf,{start,end});
       })
       .sort((a,b)=> new Date(a.PlannedStart||0) - new Date(b.PlannedStart||0));
