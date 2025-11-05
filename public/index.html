@@ -4,8 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Live Project Tracker</title>
- <link rel="stylesheet" href="/styles.css?v=20251105c" />
-<script defer src="/app.js?v=20251105c"></script>
+  <link rel="stylesheet" href="/styles.css?v=20251105d"/>
 </head>
 <body>
   <header class="bar">
@@ -14,8 +13,8 @@
       <input id="fileInput" type="file" accept=".csv,text/csv,.xml,text/xml,application/xml" hidden />
       <button id="importBtn" aria-label="Import file">Import CSV/XML</button>
       <button id="exportBtn" aria-label="Export end-of-shift CSV">Export CSV</button>
-      <button id="delayBtn" aria-label="Open Delay Log" onclick="location.href='/delay.html'">Delay Log</button>
-      <button id="clearBtn" aria-label="Clear current project" onclick="clearProject()">Clear</button>
+      <button aria-label="Open Delay Log" onclick="location.href='/delay.html'">Delay Log</button>
+      <button aria-label="Clear current project" onclick="clearProject()">Clear</button>
     </div>
   </header>
 
@@ -26,6 +25,14 @@
 
     <div class="hscroll">
       <table id="taskTable" aria-label="3-day forecast">
+        <colgroup>
+          <col class="taskname">
+          <col class="summary">
+          <col class="start">
+          <col class="actual">
+          <col class="dept">
+          <col class="actions">
+        </colgroup>
         <thead>
           <tr>
             <th>Task Name</th>
@@ -41,7 +48,7 @@
     </div>
   </main>
 
-  <!-- Pause modal -->
+  <!-- Pause dialog -->
   <dialog id="pauseDialog" role="dialog" aria-modal="true" aria-labelledby="pauseTitle">
     <form method="dialog">
       <h3 id="pauseTitle">Pause Task</h3>
@@ -68,6 +75,6 @@
     </form>
   </dialog>
 
-  <script defer src="/app.js"></script>
+  <script defer src="/app.js?v=20251105d"></script>
 </body>
 </html>
