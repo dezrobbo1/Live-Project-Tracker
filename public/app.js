@@ -1,7 +1,9 @@
-// Live Project Tracker — CSV + MSP XML import
-// View: Task Name | Task Summary Name | Scheduled Start | Actual Start | Assigned Department | Actions
+// Live Project Tracker — actions work + state persists across pages
+// Features: CSV + MSP XML import, Text30-only Department, hide summaries, robust date parsing,
+// buttons wired, and tasks saved/restored from localStorage so navigation doesn't lose data.
+
 window.addEventListener("DOMContentLoaded", () => {
-  console.log("%c[Tracker] app.js (actions ON, Text30-only dept)", "color:#6aa3ff");
+  console.log("%c[Tracker] app.js (actions + persistence)", "color:#6aa3ff");
 
   // ---- DOM ----
   const importBtn = document.getElementById("importBtn");
@@ -16,19 +18,40 @@ window.addEventListener("DOMContentLoaded", () => {
   const pauseTaskName = document.getElementById("pauseTaskName");
   const confirmPause  = document.getElementById("confirmPause");
 
-  // ---- State ----
+  // ---- State & persistence ----
+  const STORE_KEY = "PROJECT_TASKS_V1";
+  const DELAY_LOG_KEY = "DELAY_LOG_V1";
   let tasks = [];
   let pauseUID = null;
 
-  // Delay Log
-  const DELAY_LOG_KEY = "DELAY_LOG_V1";
+  function save() {
+    try { localStorage.setItem(STORE_KEY, JSON.stringify(tasks)); }
+    catch (e) { console.warn("Could not save to localStorage", e); }
+  }
+  function load() {
+    try {
+      const raw = localStorage.getItem(STORE_KEY);
+      if (!raw) return [];
+      const arr = JSON.parse(raw);
+      if (!Array.isArray(arr)) return [];
+      return arr;
+    } catch { return []; }
+  }
+
+  // Initial restore (so returning from delay.html keeps your project)
+  tasks = load();
+  render();
+
+  // Delay log helpers
   const readDelayLog  = () => { try { return JSON.parse(localStorage.getItem(DELAY_LOG_KEY)||"[]"); } catch { return []; } };
   const writeDelayLog = (arr) => localStorage.setItem(DELAY_LOG_KEY, JSON.stringify(arr));
   const appendDelayLog= (entry) => { const a=readDelayLog(); a.push(entry); writeDelayLog(a); };
 
+  // Clear button (called from index.html)
   window.clearProject = () => {
     if (!confirm("Clear current project data?")) return;
     tasks = [];
+    save();
     const notice = document.getElementById("notice");
     if (notice) notice.textContent = "Import a Microsoft Project CSV or XML to begin. Showing a 3-day forecast (today → +2 days).";
     if (fileInput) fileInput.value = "";
@@ -36,7 +59,7 @@ window.addEventListener("DOMContentLoaded", () => {
     console.log("[Tracker] project cleared");
   };
 
-  // ========= CSV helpers (tolerant) =========
+  // ========= CSV helpers (tolerant headers / delimiters) =========
   function normHeader(h){
     return (h||"")
       .replace(/^[\uFEFF\u200B]+/, "")
@@ -78,7 +101,7 @@ window.addEventListener("DOMContentLoaded", () => {
     for (let i=0;i<normalized.length;i++){
       if (wants.includes(normalized[i])) return i;
     }
-    // tolerant fallbacks
+    // loose fallbacks
     for (let i=0;i<normalized.length;i++){
       const h = normalized[i];
       if (canonical==="start"  && (h==="start date"||h==="start time")) return i;
@@ -109,31 +132,47 @@ window.addEventListener("DOMContentLoaded", () => {
     }
     return col;
   }
-  // AU-friendly + AM/PM + "05 Nov 2025 08:00"
+
+  // ======= Robust date parser for MSP CSV / locales =======
   function parseDateFlexible(s){
     if (!s) return "";
     s = String(s).trim();
+
+    // strip weekday names and commas (e.g., "Fri 01/11/25 8:00 a.m.")
+    s = s.replace(/\b(mon|tue|wed|thu|fri|sat|sun)(day)?\b[\s,]*/i, "");
+    s = s.replace(/,/g, "");
+    // normalise a.m./p.m. -> AM/PM
+    s = s.replace(/\ba\.?m\.?\b/i, "AM").replace(/\bp\.?m\.?\b/i, "PM");
+
     // native
-    const d0 = new Date(s);
-    if (!isNaN(d0)) return d0.toISOString();
-    // dd/MM/yyyy HH:mm[:ss][ AM/PM]
-    let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?\s*([APap][Mm])?)?$/);
+    let d = new Date(s);
+    if (!isNaN(d)) return d.toISOString();
+
+    // dd/MM/yyyy HH:mm[:ss] [AM/PM]
+    let m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{2,4})(?:[ T](\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i);
     if (m){
-      let d = +m[1], M = +m[2]-1, y = +m[3]; if (y<100) y+=2000;
+      let day = +m[1], mon = +m[2]-1, yr = +m[3]; if (yr<100) yr+=2000;
       let hh = +(m[4]||0), mm = +(m[5]||0), ss = +(m[6]||0);
       const ap = m[7];
       if (ap){ if (/pm/i.test(ap) && hh<12) hh+=12; if (/am/i.test(ap) && hh===12) hh=0; }
-      const dt = new Date(y,M,d,hh,mm,ss); if (!isNaN(dt)) return dt.toISOString();
+      d = new Date(yr, mon, day, hh, mm, ss);
+      if (!isNaN(d)) return d.toISOString();
     }
-    // 05 Nov 2025 08:00
-    m = s.match(/^(\d{1,2})\s+([A-Za-z]{3})\s+(\d{2,4})(?:\s+(\d{1,2}):(\d{2}))?$/);
+
+    // 05 Nov 2025 08:00 [AM/PM]
+    m = s.match(/^(\d{1,2})\s+([A-Za-z]{3,})\s+(\d{2,4})(?:\s+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*(AM|PM)?)?$/i);
     if (m){
       const monMap={jan:0,feb:1,mar:2,apr:3,may:4,jun:5,jul:6,aug:7,sep:8,oct:9,nov:10,dec:11};
-      const d=+m[1], M=monMap[m[2].toLowerCase()], y=(+m[3]<100?+m[3]+2000:+m[3]);
-      const hh=+(m[4]||0), mm=+(m[5]||0);
-      const dt=new Date(y,M,d,hh,mm,0); if(!isNaN(dt)) return dt.toISOString();
+      const monIdx = monMap[m[2].slice(0,3).toLowerCase()];
+      let yr = +m[3]; if (yr<100) yr+=2000;
+      let hh = +(m[4]||0), mm = +(m[5]||0), ss = +(m[6]||0);
+      const ap = m[7];
+      if (ap){ if (/pm/i.test(ap) && hh<12) hh+=12; if (/am/i.test(ap) && hh===12) hh=0; }
+      d = new Date(yr, monIdx, +m[1], hh, mm, ss);
+      if (!isNaN(d)) return d.toISOString();
     }
-    return "";
+
+    return ""; // leave blank if unknown
   }
 
   // ========= MSP XML (namespace-safe) =========
@@ -154,6 +193,7 @@ window.addEventListener("DOMContentLoaded", () => {
       });
     });
 
+    // Text30-only department
     function departmentFromXML(taskEl){
       let result = "";
       ql(taskEl,"ExtendedAttribute").forEach(a=>{
@@ -163,10 +203,10 @@ window.addEventListener("DOMContentLoaded", () => {
         const alias = id ? (defMap.get(id)||"") : "";
         if (!result && alias && /^assigned department$/i.test(alias) && val) result = val;
       });
-      return result; // no fallback
+      return result;
     }
 
-    // Build a map of WBS -> Name for all tasks (including summaries)
+    // Build map of WBS -> Task (includes summaries)
     const allTasks = [];
     ql(doc,"Tasks").forEach(tasksNode=>{
       ql(tasksNode,"Task").forEach(taskEl=>{
@@ -186,8 +226,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const byWBS = new Map(allTasks.map(t=>[t.wbs,t]));
     const out=[];
     for(const t of allTasks){
-      if (t.isSummary) continue;
-      // parent via WBS (e.g., "1.2.3" -> "1.2")
+      if (t.isSummary) continue; // hide summary tasks
       let parentSummaryName = "";
       if (t.wbs && t.wbs.includes(".")){
         const parentWBS = t.wbs.split(".").slice(0,-1).join(".");
@@ -212,14 +251,18 @@ window.addEventListener("DOMContentLoaded", () => {
   }
 
   // ========= Import / Export =========
-  importBtn.addEventListener("click", ()=>fileInput.click());
-  fileInput.addEventListener("change", async (e)=>{
-    const file=e.target.files[0]; if(!file) return;
+  importBtn?.addEventListener("click", ()=>fileInput?.click());
+  fileInput?.addEventListener("change", async (e)=>{
+    const file=e.target.files?.[0]; if(!file) return;
     const text = await file.text();
     const isXML = /\.xml$/i.test(file.name) || /xml/.test(file.type);
     try{
       tasks = isXML ? parseMSPXML(text) : parseCSVToTasks(text);
+      save();
       console.log(`[Tracker] imported ${tasks.length} task rows from ${isXML?'XML':'CSV'}`);
+      console.table(tasks.slice(0,5).map(t=>({
+        UID:t.TaskUID, Name:t.TaskName, Summary:t.SummaryTaskName, Start:t.PlannedStart, Dept:t.Department
+      })));
     }catch(err){
       alert(err.message || "Import error");
       console.error(err);
@@ -233,7 +276,7 @@ window.addEventListener("DOMContentLoaded", () => {
     const parsed = parseCSV(text);
     const col = buildColumnMap(parsed.headers);
 
-    // First pass: build map WBS -> {name,isSummary,level}
+    // First pass: map rows (keep summaries for WBS lookup)
     const rows = parsed.rows.map(cells => ({
       uid:(cells[col.uid]||"").trim(),
       name:(cells[col.name]||"").trim(),
@@ -247,7 +290,7 @@ window.addEventListener("DOMContentLoaded", () => {
     }));
     const byWBS = new Map(rows.map(r=>[r.wbs,r]));
 
-    // Second pass: emit only non-summaries, derive parent from WBS
+    // Emit only working tasks
     const out=[];
     for(const r of rows){
       if (r.isSummary) continue;
@@ -274,73 +317,100 @@ window.addEventListener("DOMContentLoaded", () => {
     return out;
   }
 
+  exportBtn?.addEventListener("click", ()=>{
+    const today=new Date();
+    const yyyy=today.getFullYear(), mm=String(today.getMonth()+1).padStart(2,"0"), dd=String(today.getDate()).padStart(2,"0");
+    const shiftDate=`${yyyy}-${mm}-${dd}`;
+    const rows = tasks.map(t=>[
+      t.TaskUID, shiftDate, t.ActualStart||"", t.ActualFinish||"", t.TotalActiveMinutes||0, t.TotalPausedMinutes||0
+    ].join(","));
+    const csv = ["TaskUID,ShiftDate,ActualStart,ActualFinish,TotalActiveMinutes,TotalPausedMinutes", ...rows].join("\n");
+    const blob=new Blob([csv],{type:"text/csv"});
+    const a=document.createElement("a"); a.href=URL.createObjectURL(blob); a.download=`shift_actuals_${shiftDate}.csv`; a.click();
+  });
+
   // ========= Actions / FSM =========
   function startTask(uid){
-    const t = tasks.find(x=>x.TaskUID===uid); if(!t) return;
-    const now = new Date().toISOString();
-    if(t.State==="Idle"){
-      t.ActualStart=now; t.State="Active"; t.lastStart=now; (t.Audit ||= []).push({type:"Start",time:now});
-    }else if(t.State==="Paused"){
-      t.State="Active";
-      if(t.lastPause){
+    try{
+      const t = tasks.find(x=>x.TaskUID===uid); if(!t) return;
+      const now = new Date().toISOString();
+      if(t.State==="Idle"){
+        t.ActualStart=now; t.State="Active"; t.lastStart=now; (t.Audit ||= []).push({type:"Start",time:now});
+      }else if(t.State==="Paused"){
+        t.State="Active";
+        if(t.lastPause){
+          const paused = new Date(now) - new Date(t.lastPause);
+          t.TotalPausedMinutes = (t.TotalPausedMinutes||0) + (paused>0 ? Math.round(paused/60000) : 0);
+        }
+        t.lastStart=now; (t.Audit ||= []).push({type:"Resume",time:now});
+      }
+      save();
+      render();
+    }catch(e){ console.error("startTask error", e); }
+  }
+  function pauseTask(uid){
+    try{
+      const t = tasks.find(x=>x.TaskUID===uid); if(!t || t.State!=="Active") return;
+      pauseUID = uid;
+      pauseTaskName.textContent = t.TaskName;
+      pauseReason.value = ""; pauseNotes.value = "";
+      pauseDialog.showModal();
+    }catch(e){ console.error("pauseTask error", e); }
+  }
+  function finishTask(uid){
+    try{
+      const t = tasks.find(x=>x.TaskUID===uid); if(!t) return;
+      const now = new Date().toISOString();
+      if(t.State==="Active" && t.lastStart){
+        const active = new Date(now) - new Date(t.lastStart);
+        t.TotalActiveMinutes = (t.TotalActiveMinutes||0) + (active>0 ? Math.round(active/60000) : 0);
+      }
+      if(t.State==="Paused" && t.lastPause){
         const paused = new Date(now) - new Date(t.lastPause);
         t.TotalPausedMinutes = (t.TotalPausedMinutes||0) + (paused>0 ? Math.round(paused/60000) : 0);
       }
-      t.lastStart=now; (t.Audit ||= []).push({type:"Resume",time:now});
-    }
-    render();
+      t.State="Finished"; t.ActualFinish=now; t.lastStart=null; t.lastPause=null;
+      (t.Audit ||= []).push({type:"Finish",time:now});
+      save();
+      render();
+    }catch(e){ console.error("finishTask error", e); }
   }
-  function pauseTask(uid){
-    const t = tasks.find(x=>x.TaskUID===uid); if(!t || t.State!=="Active") return;
-    pauseUID = uid;
-    pauseTaskName.textContent = t.TaskName;
-    pauseReason.value = ""; pauseNotes.value = "";
-    pauseDialog.showModal();
-  }
-  function finishTask(uid){
-    const t = tasks.find(x=>x.TaskUID===uid); if(!t) return;
-    const now = new Date().toISOString();
-    if(t.State==="Active" && t.lastStart){
-      const active = new Date(now) - new Date(t.lastStart);
-      t.TotalActiveMinutes = (t.TotalActiveMinutes||0) + (active>0 ? Math.round(active/60000) : 0);
-    }
-    if(t.State==="Paused" && t.lastPause){
-      const paused = new Date(now) - new Date(t.lastPause);
-      t.TotalPausedMinutes = (t.TotalPausedMinutes||0) + (paused>0 ? Math.round(paused/60000) : 0);
-    }
-    t.State="Finished"; t.ActualFinish=now; t.lastStart=null; t.lastPause=null;
-    (t.Audit ||= []).push({type:"Finish",time:now});
-    render();
-  }
+  // expose globally so inline onclick works even after reloads
   window.startTask = startTask;
   window.pauseTask = pauseTask;
   window.finishTask = finishTask;
 
-  confirmPause.addEventListener("click",(e)=>{
+  confirmPause?.addEventListener("click",(e)=>{
     e.preventDefault();
     if(!pauseReason.value) return;
-    const t = tasks.find(x=>x.TaskUID===pauseUID); if(!t) return;
-    const now = new Date().toISOString();
-    if(t.State==="Active" && t.lastStart){
-      const active = new Date(now) - new Date(t.lastStart);
-      t.TotalActiveMinutes = (t.TotalActiveMinutes||0) + (active>0 ? Math.round(active/60000) : 0);
+    try{
+      const t = tasks.find(x=>x.TaskUID===pauseUID); if(!t) return;
+      const now = new Date().toISOString();
+      if(t.State==="Active" && t.lastStart){
+        const active = new Date(now) - new Date(t.lastStart);
+        t.TotalActiveMinutes = (t.TotalActiveMinutes||0) + (active>0 ? Math.round(active/60000) : 0);
+      }
+      t.State="Paused"; t.lastStart=null; t.lastPause=now;
+      (t.Audit ||= []).push({type:"Pause",time:now,reason:pauseReason.value,notes:pauseNotes.value||""});
+
+      appendDelayLog({
+        LoggedAt: now,
+        TaskUID: t.TaskUID,
+        TaskName: t.TaskName,
+        SummaryTaskName: t.SummaryTaskName || "",
+        Department: t.Department || "",
+        PlannedStart: t.PlannedStart || "",
+        ActualStart: t.ActualStart || "",
+        Reason: pauseReason.value,
+        Notes: pauseNotes.value || ""
+      });
+
+      save();
+      pauseDialog.close();
+      render();
+    }catch(err){
+      console.error("confirmPause error", err);
     }
-    t.State="Paused"; t.lastStart=null; t.lastPause=now;
-    (t.Audit ||= []).push({type:"Pause",time:now,reason:pauseReason.value,notes:pauseNotes.value||""});
-
-    appendDelayLog({
-      LoggedAt: now,
-      TaskUID: t.TaskUID,
-      TaskName: t.TaskName,
-      SummaryTaskName: t.SummaryTaskName || "",
-      Department: t.Department || "",
-      PlannedStart: t.PlannedStart || "",
-      ActualStart: t.ActualStart || "",
-      Reason: pauseReason.value,
-      Notes: pauseNotes.value || ""
-    });
-
-    pauseDialog.close(); render();
   });
 
   // ========= Render (3-day window) =========
@@ -359,7 +429,7 @@ window.addEventListener("DOMContentLoaded", () => {
       .filter(t => {
         const ps = new Date(t.PlannedStart || 0).getTime();
         const pf = new Date(t.PlannedFinish || 0).getTime();
-        if (!ps || !pf) return true;
+        if (!ps || !pf) return true; // still show tasks if no dates parsed
         return overlaps(ps,pf,{start,end});
       })
       .sort((a,b)=> new Date(a.PlannedStart||0) - new Date(b.PlannedStart||0));
